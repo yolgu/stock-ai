@@ -1,0 +1,56 @@
+{
+  "$schema": "https://raw.githubusercontent.com/neutralinojs/neutralinojs/main/schemas/neutralino.config.schema.json",
+  "applicationId": "com.jik.stocksub",
+  "version": "0.1.0",
+  "defaultMode": "window",
+  "port": 0,
+  "documentRoot": "/dist/",
+  "url": "/",
+  "enableServer": true,
+  "enableNativeAPI": true,
+  "enableExtensions": true,
+  "tokenSecurity": "one-time",
+  "nativeAllowList": [
+    "app.broadcast",
+    "extensions.dispatch",
+    "extensions.getStats",
+    "events.on",
+    "events.off"
+  ],
+  "extensions": [
+    {
+      "id": "app.stockSub.runtime",
+      "command": "node ${NL_PATH}/extensions/app/main.cjs"
+    }
+  ],
+  "modes": {
+    "window": {
+      "title": "Stock Sub",
+      "width": 1240,
+      "height": 860,
+      "minWidth": 920,
+      "minHeight": 640,
+      "center": true,
+      "resizable": true,
+      "exitProcessOnClose": true,
+      "useSavedState": true,
+      "useLogicalPixels": true,
+      "injectGlobals": true,
+      "injectClientLibrary": true
+    }
+  },
+  "cli": {
+    "binaryName": "stock-sub",
+    "resourcesPath": "/dist/",
+    "extensionsPath": "/extensions/",
+    "frontendLibrary": {
+      "patchFile": "/index.html",
+      "devUrl": "http://localhost:5173",
+      "projectPath": "/",
+      "initCommand": "pnpm install",
+      "devCommand": "pnpm dev:vite",
+      "buildCommand": "pnpm build:renderer"
+    },
+    "binaryVersion": "6.8.0"
+  }
+}

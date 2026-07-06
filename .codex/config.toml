@@ -1,0 +1,54 @@
+approvals_reviewer = "user"
+
+[agents]
+max_threads = 15
+max_depth = 1
+job_max_runtime_seconds = 1200
+
+[agents.requirements_interviewer]
+description = "Read-only requirements interviewer: clarify intent with targeted questions and repo/doc research."
+config_file = "./agents/requirements-interviewer.toml"
+
+[agents.planner]
+description = "Read-only planner: produce a DDD and desktop-app-aware implementation plan with verification."
+config_file = "./agents/planner.toml"
+
+[agents.feasibility_reviewer]
+description = "Read-only feasibility reviewer: check executability, dependencies, commands, and missing steps."
+config_file = "./agents/feasibility-reviewer.toml"
+
+[agents.uncertainty_analyst]
+description = "Read-only uncertainty analyst: identify assumptions and design cheap validation spikes."
+config_file = "./agents/uncertainty-analyst.toml"
+
+[agents.smell_detector]
+description = "Read-only smell detector: detect over-engineering, boundary leaks, and maintainability issues."
+config_file = "./agents/smell-detector.toml"
+
+[agents.intent_guard]
+description = "Read-only intent guard: verify plan and implementation align to user intent and acceptance criteria."
+config_file = "./agents/intent-guard.toml"
+
+[agents.contrarian_reviewer]
+description = "Read-only contrarian reviewer: challenge assumptions and surface simpler or safer alternatives."
+config_file = "./agents/contrarian-reviewer.toml"
+
+[agents.worker]
+description = "Workspace-write worker for one approved task. Small diffs, local checks, no scope creep."
+config_file = "./agents/worker.toml"
+
+[agents.implement_orchestrator]
+description = "Workspace-write orchestrator: execute approved plans by waves/tasks with worker delegation and verification."
+config_file = "./agents/implement-orchestrator.toml"
+
+[agents.security_auditor]
+description = "Read-only security auditor: scan for secrets, unsafe Neutralino/native extension access, XSS, and local-system risks."
+config_file = "./agents/security-auditor.toml"
+
+[agents.requirements_auditor]
+description = "Read-only requirements auditor: verify implementation meets plan acceptance criteria 1:1."
+config_file = "./agents/requirements-auditor.toml"
+
+[agents.quality_reviewer]
+description = "Read-only quality reviewer: check tests, type safety, maintainability, and layer boundaries."
+config_file = "./agents/quality-reviewer.toml"

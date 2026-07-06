@@ -1,0 +1,4 @@
+interface:
+  display_name: "Rules Governance"
+  short_description: "Repository governance execution skill"
+  default_prompt: "Apply rules-governance as an embedded policy skill and enforce its workflow and prohibitions on the task."
