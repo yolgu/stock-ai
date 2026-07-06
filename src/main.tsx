@@ -4,7 +4,10 @@ import { createRoot } from "react-dom/client";
 
 import { App } from "./App";
 import {
+  createMarketDataClientFromNeutralinoApi,
+  createQuantIndicatorClientFromNeutralinoApi,
   createRuntimeProfileClientFromNeutralinoApi,
+  createStockReferenceClientFromNeutralinoApi,
   createTossSettingsClientFromNeutralinoApi,
   createWatchlistClientFromNeutralinoApi
 } from "./infrastructure/neutralino/createRuntimeProfileClientFromWindow";
@@ -24,6 +27,18 @@ createRoot(document.getElementById("root") as HTMLElement).render(
         events
       })}
       watchlistClient={createWatchlistClientFromNeutralinoApi({
+        extensions,
+        events
+      })}
+      stockReferenceClient={createStockReferenceClientFromNeutralinoApi({
+        extensions,
+        events
+      })}
+      marketDataClient={createMarketDataClientFromNeutralinoApi({
+        extensions,
+        events
+      })}
+      quantIndicatorClient={createQuantIndicatorClientFromNeutralinoApi({
         extensions,
         events
       })}

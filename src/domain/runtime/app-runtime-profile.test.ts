@@ -27,11 +27,11 @@ describe("FeatureCapability", () => {
 });
 
 describe("AppRuntimeProfile", () => {
-  it("creates a default desktop profile with only watchlist available", () => {
+  it("creates a default desktop profile with watchlist and quant indicators available", () => {
     const profile = AppRuntimeProfile.createDefault();
 
     expect(profile.isCapabilityEnabled("watchlist")).toBe(true);
-    expect(profile.isCapabilityEnabled("quantIndicators")).toBe(false);
+    expect(profile.isCapabilityEnabled("quantIndicators")).toBe(true);
     expect(profile.isCapabilityEnabled("llmInsights")).toBe(false);
     expect(profile.isCapabilityEnabled("orders")).toBe(false);
     expect(profile.toDto()).toEqual({
@@ -45,8 +45,8 @@ describe("AppRuntimeProfile", () => {
         },
         {
           name: "quantIndicators",
-          enabled: false,
-          reason: "시장 데이터 폴링 단계 이후 활성화"
+          enabled: true,
+          reason: "정량 지표 계산 준비됨"
         },
         {
           name: "llmInsights",

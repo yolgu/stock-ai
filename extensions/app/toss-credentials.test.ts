@@ -120,4 +120,21 @@ describe("Toss credential settings", () => {
       recoverable: true
     });
   });
+
+  it("maps OAuth network failures to a recoverable connection error", async () => {
+    const fetcher = async (): Promise<Response> => {
+      throw new TypeError("fetch failed");
+    };
+    const client = new TossOAuthClient(fetcher);
+
+    await expect(
+      client.testConnection({
+        clientId: "client_fixture_1234567890",
+        clientSecret: "secret_fixture_super_secret"
+      })
+    ).rejects.toMatchObject({
+      code: "toss_connection_failed",
+      recoverable: true
+    });
+  });
 });

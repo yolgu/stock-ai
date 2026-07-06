@@ -24,7 +24,7 @@ export interface RuntimeProfileDto {
 
 const defaultCapabilityReasons: Record<FeatureCapabilityName, string> = {
   watchlist: "관심종목 목록 기능 준비됨",
-  quantIndicators: "시장 데이터 폴링 단계 이후 활성화",
+  quantIndicators: "정량 지표 계산 준비됨",
   llmInsights: "수동 AI 분석 단계 이후 활성화",
   orders: "주문 연동 단계 이후 활성화"
 };
@@ -87,7 +87,7 @@ export class AppRuntimeProfile {
   public static createDefault(): AppRuntimeProfile {
     return new AppRuntimeProfile("desktop", "notConfigured", [
       FeatureCapability.enabled("watchlist"),
-      FeatureCapability.disabled("quantIndicators"),
+      FeatureCapability.enabled("quantIndicators"),
       FeatureCapability.disabled("llmInsights"),
       FeatureCapability.disabled("orders")
     ]);

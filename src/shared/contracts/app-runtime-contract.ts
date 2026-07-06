@@ -20,6 +20,32 @@ export type WatchlistDeleteRequestEvent = "watchlist:delete:request";
 export type WatchlistDeleteResponseEvent = "watchlist:delete:response";
 export type WatchlistReorderRequestEvent = "watchlist:reorder:request";
 export type WatchlistReorderResponseEvent = "watchlist:reorder:response";
+export type StockReferenceVerifyRequestEvent = "stock-reference:verify:request";
+export type StockReferenceVerifyResponseEvent = "stock-reference:verify:response";
+export type WatchlistCreateVerifiedRequestEvent = "watchlist:create-verified:request";
+export type WatchlistCreateVerifiedResponseEvent = "watchlist:create-verified:response";
+export type MarketDataRefreshWatchlistRequestEvent =
+  "market-data:refresh-watchlist:request";
+export type MarketDataRefreshWatchlistResponseEvent =
+  "market-data:refresh-watchlist:response";
+export type MarketDataRefreshCardRequestEvent = "market-data:refresh-card:request";
+export type MarketDataRefreshCardResponseEvent = "market-data:refresh-card:response";
+export type MarketDataLatestSnapshotsRequestEvent =
+  "market-data:latest-snapshots:request";
+export type MarketDataLatestSnapshotsResponseEvent =
+  "market-data:latest-snapshots:response";
+export type QuantIndicatorsRefreshWatchlistRequestEvent =
+  "quant-indicators:refresh-watchlist:request";
+export type QuantIndicatorsRefreshWatchlistResponseEvent =
+  "quant-indicators:refresh-watchlist:response";
+export type QuantIndicatorsRefreshCardRequestEvent =
+  "quant-indicators:refresh-card:request";
+export type QuantIndicatorsRefreshCardResponseEvent =
+  "quant-indicators:refresh-card:response";
+export type QuantIndicatorsLatestSnapshotsRequestEvent =
+  "quant-indicators:latest-snapshots:request";
+export type QuantIndicatorsLatestSnapshotsResponseEvent =
+  "quant-indicators:latest-snapshots:response";
 export type TossCredentialsReadStatusRequestEvent =
   "settings:toss-credentials:read-status";
 export type TossCredentialsReadStatusResponseEvent =
@@ -42,6 +68,14 @@ export type AppRequestEvent =
   | WatchlistRestoreRequestEvent
   | WatchlistDeleteRequestEvent
   | WatchlistReorderRequestEvent
+  | StockReferenceVerifyRequestEvent
+  | WatchlistCreateVerifiedRequestEvent
+  | MarketDataRefreshWatchlistRequestEvent
+  | MarketDataRefreshCardRequestEvent
+  | MarketDataLatestSnapshotsRequestEvent
+  | QuantIndicatorsRefreshWatchlistRequestEvent
+  | QuantIndicatorsRefreshCardRequestEvent
+  | QuantIndicatorsLatestSnapshotsRequestEvent
   | TossCredentialsReadStatusRequestEvent
   | TossCredentialsSaveRequestEvent
   | TossCredentialsDeleteRequestEvent
@@ -57,6 +91,14 @@ export type AppResponseEvent =
   | WatchlistRestoreResponseEvent
   | WatchlistDeleteResponseEvent
   | WatchlistReorderResponseEvent
+  | StockReferenceVerifyResponseEvent
+  | WatchlistCreateVerifiedResponseEvent
+  | MarketDataRefreshWatchlistResponseEvent
+  | MarketDataRefreshCardResponseEvent
+  | MarketDataLatestSnapshotsResponseEvent
+  | QuantIndicatorsRefreshWatchlistResponseEvent
+  | QuantIndicatorsRefreshCardResponseEvent
+  | QuantIndicatorsLatestSnapshotsResponseEvent
   | TossCredentialsReadStatusResponseEvent
   | TossCredentialsSaveResponseEvent
   | TossCredentialsDeleteResponseEvent
@@ -73,7 +115,19 @@ export type AppRuntimeErrorCode =
   | "duplicate_card"
   | "restore_available"
   | "invalid_toss_credentials"
-  | "toss_connection_failed";
+  | "toss_connection_failed"
+  | "stock_not_found"
+  | "stock_verification_required"
+  | "stock_confirmation_required"
+  | "stock_reference_unavailable"
+  | "toss_rate_limited"
+  | "market_data_unavailable"
+  | "market_data_rate_limited"
+  | "market_data_snapshot_not_found"
+  | "market_calendar_unavailable"
+  | "quant_indicator_unavailable"
+  | "quant_indicator_snapshot_not_found"
+  | "quant_indicator_calculation_failed";
 
 export interface AppRuntimeContract {
   extensionId: "app.stockSub.runtime";
@@ -97,6 +151,22 @@ export interface AppRuntimeContract {
     watchlistDeleteResponse: WatchlistDeleteResponseEvent;
     watchlistReorderRequest: WatchlistReorderRequestEvent;
     watchlistReorderResponse: WatchlistReorderResponseEvent;
+    stockReferenceVerifyRequest: StockReferenceVerifyRequestEvent;
+    stockReferenceVerifyResponse: StockReferenceVerifyResponseEvent;
+    watchlistCreateVerifiedRequest: WatchlistCreateVerifiedRequestEvent;
+    watchlistCreateVerifiedResponse: WatchlistCreateVerifiedResponseEvent;
+    marketDataRefreshWatchlistRequest: MarketDataRefreshWatchlistRequestEvent;
+    marketDataRefreshWatchlistResponse: MarketDataRefreshWatchlistResponseEvent;
+    marketDataRefreshCardRequest: MarketDataRefreshCardRequestEvent;
+    marketDataRefreshCardResponse: MarketDataRefreshCardResponseEvent;
+    marketDataLatestSnapshotsRequest: MarketDataLatestSnapshotsRequestEvent;
+    marketDataLatestSnapshotsResponse: MarketDataLatestSnapshotsResponseEvent;
+    quantIndicatorsRefreshWatchlistRequest: QuantIndicatorsRefreshWatchlistRequestEvent;
+    quantIndicatorsRefreshWatchlistResponse: QuantIndicatorsRefreshWatchlistResponseEvent;
+    quantIndicatorsRefreshCardRequest: QuantIndicatorsRefreshCardRequestEvent;
+    quantIndicatorsRefreshCardResponse: QuantIndicatorsRefreshCardResponseEvent;
+    quantIndicatorsLatestSnapshotsRequest: QuantIndicatorsLatestSnapshotsRequestEvent;
+    quantIndicatorsLatestSnapshotsResponse: QuantIndicatorsLatestSnapshotsResponseEvent;
     tossCredentialsReadStatusRequest: TossCredentialsReadStatusRequestEvent;
     tossCredentialsReadStatusResponse: TossCredentialsReadStatusResponseEvent;
     tossCredentialsSaveRequest: TossCredentialsSaveRequestEvent;
@@ -174,6 +244,293 @@ export interface TossCredentialStatusPayload {
   maskedClientId: string | null;
   lastValidatedAt: string | null;
   connectionStatus: TossConnectionStatus;
+}
+
+export interface StockReferenceVerifyRequestPayload {
+  rawInput: string;
+}
+
+export type StockReferenceRejectedReason =
+  | "stock_not_found"
+  | "invalid_request"
+  | "stock_reference_unavailable";
+
+export interface VerifiedStockReferencePayload {
+  symbol: string;
+  market: string;
+  displayName: string;
+  englishName: string;
+  currency: string;
+  status: string;
+  securityType: string;
+  requiresConfirmation: boolean;
+  confirmationReasons: string[];
+  verifiedAt: string;
+}
+
+export interface RejectedStockReferencePayload {
+  symbol: string;
+  reason: StockReferenceRejectedReason;
+  message: string;
+}
+
+export interface StockReferenceVerificationPayload {
+  verified: VerifiedStockReferencePayload[];
+  rejected: RejectedStockReferencePayload[];
+}
+
+export interface CreateVerifiedWatchCardPayload {
+  symbol: string;
+  confirmedRisk: boolean;
+  groupId: string | null;
+  tags: string[];
+  memo: string;
+}
+
+export type MarketDataFreshness = "fresh" | "stale" | "missing";
+export type MarketDataQuality = "complete" | "partial" | "degraded" | "unavailable";
+export type MarketCountry = "KR" | "US";
+export type MarketSessionState = "pre" | "regular" | "after" | "closed" | "holiday";
+
+export interface MarketDataAdapterErrorPayload {
+  endpoint: string;
+  code: AppRuntimeErrorCode;
+  message: string;
+  recoverable: boolean;
+}
+
+export interface MarketPriceObservationPayload {
+  symbol: string;
+  timestamp: string | null;
+  lastPrice: string;
+  currency: string;
+}
+
+export interface MarketTradeObservationPayload {
+  price: string;
+  volume: string;
+  timestamp: string;
+  currency: string;
+}
+
+export interface MarketOrderbookEntryPayload {
+  price: string;
+  volume: string;
+}
+
+export interface MarketOrderbookObservationPayload {
+  timestamp: string | null;
+  currency: string;
+  asks: MarketOrderbookEntryPayload[];
+  bids: MarketOrderbookEntryPayload[];
+}
+
+export interface MarketCandleObservationPayload {
+  timestamp: string;
+  openPrice: string;
+  highPrice: string;
+  lowPrice: string;
+  closePrice: string;
+  volume: string;
+  currency: string;
+}
+
+export interface MarketCandlePageObservationPayload {
+  interval: "1m" | "1d";
+  candles: MarketCandleObservationPayload[];
+  nextBefore: string | null;
+}
+
+export interface MarketExchangeRateObservationPayload {
+  baseCurrency: string;
+  quoteCurrency: string;
+  rate: string;
+  midRate: string;
+  validFrom: string;
+  validUntil: string;
+}
+
+export interface MarketSessionObservationPayload {
+  country: MarketCountry;
+  state: MarketSessionState;
+  source: "calendar" | "fallback";
+}
+
+export interface MarketDataObservationsPayload {
+  price: MarketPriceObservationPayload | null;
+  trades: MarketTradeObservationPayload[];
+  orderbook: MarketOrderbookObservationPayload | null;
+  intradayCandles: MarketCandlePageObservationPayload | null;
+  dailyCandles: MarketCandlePageObservationPayload | null;
+  exchangeRate: MarketExchangeRateObservationPayload | null;
+  marketSession: MarketSessionObservationPayload | null;
+}
+
+export interface MarketDataSnapshotPayload {
+  snapshotId: string;
+  cardId: string;
+  market: string;
+  symbol: string;
+  capturedAt: string;
+  freshness: MarketDataFreshness;
+  quality: MarketDataQuality;
+  observations: MarketDataObservationsPayload;
+  adapterErrors: MarketDataAdapterErrorPayload[];
+}
+
+export interface RefreshMarketDataForWatchlistPayload {
+  visibleCardIds: string[];
+}
+
+export interface RefreshMarketDataForCardPayload {
+  cardId: string;
+}
+
+export interface ReadLatestMarketDataSnapshotsPayload {
+  cardIds?: string[];
+}
+
+export interface MarketDataRefreshPayload {
+  refreshedAt: string;
+  nextPollDelayMs: number;
+  snapshots: MarketDataSnapshotPayload[];
+}
+
+export interface MarketDataRefreshCardPayload {
+  refreshedAt: string;
+  nextPollDelayMs: number;
+  snapshot: MarketDataSnapshotPayload;
+}
+
+export interface MarketDataLatestSnapshotsPayload {
+  snapshots: MarketDataSnapshotPayload[];
+}
+
+export type QuantIndicatorQuality = "complete" | "partial" | "unavailable";
+export type QuantIndicatorDecisionStatus =
+  | "watch"
+  | "confirmationWaiting"
+  | "riskHigh"
+  | "invalidated"
+  | "dataInsufficient";
+export type QuantIndicatorSeverity = "positive" | "neutral" | "warning" | "danger" | "unavailable";
+export type QuantIndicatorCalculationStatus = "available" | "estimated" | "unavailable";
+export type QuantIndicatorSignalKey =
+  | "vwap"
+  | "cvd"
+  | "spread"
+  | "atrStop"
+  | "supplyPressure"
+  | "riskReward";
+
+export interface QuantIndicatorSignalPayload {
+  key: QuantIndicatorSignalKey;
+  label: string;
+  severity: QuantIndicatorSeverity;
+  status: QuantIndicatorCalculationStatus;
+  reason: string | null;
+}
+
+export interface VwapIndicatorPayload {
+  status: "available" | "unavailable";
+  value: string | null;
+  distanceBps: number | null;
+  label: string;
+  severity: QuantIndicatorSeverity;
+  unavailableReason: string | null;
+}
+
+export interface CvdIndicatorPayload {
+  status: "estimated" | "unavailable";
+  value: string | null;
+  confidence: "estimated" | "unavailable";
+  label: string;
+  severity: QuantIndicatorSeverity;
+  unavailableReason: string | null;
+}
+
+export interface SpreadIndicatorPayload {
+  status: "available" | "unavailable";
+  spreadBps: number | null;
+  label: string;
+  severity: QuantIndicatorSeverity;
+  unavailableReason: string | null;
+}
+
+export interface AtrStopIndicatorPayload {
+  status: "available" | "unavailable";
+  atr: string | null;
+  stopDistancePercent: number | null;
+  label: string;
+  severity: QuantIndicatorSeverity;
+  unavailableReason: string | null;
+}
+
+export interface SupplyPressureIndicatorPayload {
+  status: "available" | "unavailable";
+  pocPrice: string | null;
+  overheadRatio: number | null;
+  label: string;
+  severity: QuantIndicatorSeverity;
+  unavailableReason: string | null;
+}
+
+export interface RiskRewardIndicatorPayload {
+  status: "available" | "unavailable";
+  ratio: number | null;
+  label: string;
+  severity: QuantIndicatorSeverity;
+  unavailableReason: string | null;
+}
+
+export interface QuantIndicatorsPayload {
+  vwap: VwapIndicatorPayload;
+  cvd: CvdIndicatorPayload;
+  spread: SpreadIndicatorPayload;
+  atrStop: AtrStopIndicatorPayload;
+  supplyPressure: SupplyPressureIndicatorPayload;
+  riskReward: RiskRewardIndicatorPayload;
+}
+
+export interface QuantIndicatorSnapshotPayload {
+  snapshotId: string;
+  sourceMarketDataSnapshotId: string;
+  cardId: string;
+  market: string;
+  symbol: string;
+  calculatedAt: string;
+  quality: QuantIndicatorQuality;
+  decisionStatus: QuantIndicatorDecisionStatus;
+  decisionLabel: string;
+  nextCheckLabel: string;
+  indicators: QuantIndicatorsPayload;
+  signals: QuantIndicatorSignalPayload[];
+}
+
+export interface RefreshQuantIndicatorsForWatchlistPayload {
+  cardIds: string[];
+}
+
+export interface RefreshQuantIndicatorsForCardPayload {
+  cardId: string;
+}
+
+export interface ReadLatestQuantIndicatorSnapshotsPayload {
+  cardIds?: string[];
+}
+
+export interface QuantIndicatorRefreshPayload {
+  refreshedAt: string;
+  snapshots: QuantIndicatorSnapshotPayload[];
+}
+
+export interface QuantIndicatorRefreshCardPayload {
+  refreshedAt: string;
+  snapshot: QuantIndicatorSnapshotPayload;
+}
+
+export interface QuantIndicatorLatestSnapshotsPayload {
+  snapshots: QuantIndicatorSnapshotPayload[];
 }
 
 export interface CreateTossCredentialStatusPayloadInput {

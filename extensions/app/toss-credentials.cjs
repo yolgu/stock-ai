@@ -82,24 +82,50 @@ class TossOAuthClient {
   }
 
   async testConnection(credentials) {
+    await this.issueAccessToken(credentials);
+
+    return { ok: true };
+  }
+
+  async issueAccessToken(credentials) {
     const body = new URLSearchParams();
     body.set("grant_type", "client_credentials");
     body.set("client_id", credentials.clientId);
     body.set("client_secret", credentials.clientSecret);
 
-    const response = await this.fetcher("https://openapi.tossinvest.com/oauth2/token", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/x-www-form-urlencoded"
-      },
-      body: body.toString()
-    });
+    let response;
+
+    try {
+      response = await this.fetcher("https://openapi.tossinvest.com/oauth2/token", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/x-www-form-urlencoded"
+        },
+        body: body.toString()
+      });
+    } catch (error) {
+      throw new TossCredentialError(
+        "toss_connection_failed",
+        error instanceof Error ? error.message : "Toss token request failed",
+        true
+      );
+    }
 
     if (!response.ok) {
       await mapTossAuthFailure(response);
     }
 
-    const payload = await response.json();
+    let payload;
+
+    try {
+      payload = await response.json();
+    } catch {
+      throw new TossCredentialError(
+        "toss_connection_failed",
+        "Toss token response was not valid JSON",
+        true
+      );
+    }
 
     if (typeof payload.access_token !== "string") {
       throw new TossCredentialError(
@@ -109,7 +135,10 @@ class TossOAuthClient {
       );
     }
 
-    return { ok: true };
+    return {
+      accessToken: payload.access_token,
+      expiresIn: typeof payload.expires_in === "number" ? payload.expires_in : 3600
+    };
   }
 }
 

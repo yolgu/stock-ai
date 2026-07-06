@@ -8,6 +8,14 @@ import {
   type RuntimeProfileClient
 } from "./NeutralinoRuntimeProfileClient";
 import {
+  NeutralinoMarketDataClient,
+  type MarketDataClient
+} from "./NeutralinoMarketDataClient";
+import {
+  NeutralinoQuantIndicatorClient,
+  type QuantIndicatorClient
+} from "./NeutralinoQuantIndicatorClient";
+import {
   NeutralinoTossSettingsClient,
   type SaveTossCredentialsInput,
   type TossSettingsClient
@@ -19,6 +27,16 @@ import {
   type WatchlistClient,
   type WatchlistListPayload
 } from "./NeutralinoWatchlistClient";
+import {
+  NeutralinoStockReferenceClient,
+  type CreateVerifiedWatchCardResponse,
+  type StockReferenceClient,
+  type VerifyStockReferencePayload
+} from "./NeutralinoStockReferenceClient";
+import type {
+  CreateVerifiedWatchCardPayload,
+  StockReferenceVerificationPayload
+} from "../../shared/contracts/app-runtime-contract";
 
 export interface NeutralinoRuntimeApi {
   extensions: NeutralinoExtensionsApi;
@@ -69,6 +87,48 @@ class MissingNeutralinoWatchlistClient implements WatchlistClient {
   }
 
   public async reorder(): Promise<never> {
+    throw createMissingRuntimeError();
+  }
+}
+
+class MissingNeutralinoStockReferenceClient implements StockReferenceClient {
+  public async verify(
+    _input: VerifyStockReferencePayload
+  ): Promise<StockReferenceVerificationPayload> {
+    throw createMissingRuntimeError();
+  }
+
+  public async createVerifiedCard(
+    _input: CreateVerifiedWatchCardPayload
+  ): Promise<CreateVerifiedWatchCardResponse> {
+    throw createMissingRuntimeError();
+  }
+}
+
+class MissingNeutralinoMarketDataClient implements MarketDataClient {
+  public async refreshWatchlist(): Promise<never> {
+    throw createMissingRuntimeError();
+  }
+
+  public async refreshCard(): Promise<never> {
+    throw createMissingRuntimeError();
+  }
+
+  public async readLatestSnapshots(): Promise<never> {
+    throw createMissingRuntimeError();
+  }
+}
+
+class MissingNeutralinoQuantIndicatorClient implements QuantIndicatorClient {
+  public async refreshWatchlist(): Promise<never> {
+    throw createMissingRuntimeError();
+  }
+
+  public async refreshCard(): Promise<never> {
+    throw createMissingRuntimeError();
+  }
+
+  public async readLatestSnapshots(): Promise<never> {
     throw createMissingRuntimeError();
   }
 }
@@ -133,6 +193,45 @@ export function createTossSettingsClientFromNeutralinoApi(
   }
 
   return new NeutralinoTossSettingsClient({
+    extensions: neutralinoApi.extensions,
+    events: neutralinoApi.events
+  });
+}
+
+export function createStockReferenceClientFromNeutralinoApi(
+  neutralinoApi: NeutralinoRuntimeApi | undefined
+): StockReferenceClient {
+  if (neutralinoApi === undefined) {
+    return new MissingNeutralinoStockReferenceClient();
+  }
+
+  return new NeutralinoStockReferenceClient({
+    extensions: neutralinoApi.extensions,
+    events: neutralinoApi.events
+  });
+}
+
+export function createMarketDataClientFromNeutralinoApi(
+  neutralinoApi: NeutralinoRuntimeApi | undefined
+): MarketDataClient {
+  if (neutralinoApi === undefined) {
+    return new MissingNeutralinoMarketDataClient();
+  }
+
+  return new NeutralinoMarketDataClient({
+    extensions: neutralinoApi.extensions,
+    events: neutralinoApi.events
+  });
+}
+
+export function createQuantIndicatorClientFromNeutralinoApi(
+  neutralinoApi: NeutralinoRuntimeApi | undefined
+): QuantIndicatorClient {
+  if (neutralinoApi === undefined) {
+    return new MissingNeutralinoQuantIndicatorClient();
+  }
+
+  return new NeutralinoQuantIndicatorClient({
     extensions: neutralinoApi.extensions,
     events: neutralinoApi.events
   });

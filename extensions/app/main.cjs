@@ -7,6 +7,28 @@ const {
   StoredTossCredentialRepository,
   TossOAuthClient
 } = require("./toss-credentials.cjs");
+const {
+  CachedTossAccessTokenProvider,
+  StoredStockReferenceCache,
+  TossStockInfoClient,
+  createVerifiedWatchCard,
+  verifyStockReferences
+} = require("./stock-reference.cjs");
+const {
+  RateLimitAwareTossClient,
+  StoredMarketDataSnapshotRepository,
+  TossMarketDataClient,
+  TossMarketInfoClient,
+  readLatestMarketDataSnapshots,
+  refreshMarketDataForCard,
+  refreshMarketDataForWatchlist
+} = require("./market-data.cjs");
+const {
+  StoredQuantIndicatorSnapshotRepository,
+  readLatestQuantIndicatorSnapshots,
+  refreshQuantIndicatorsForCard,
+  refreshQuantIndicatorsForWatchlist
+} = require("./quant-indicators.cjs");
 
 function createDefaultRuntimeProfilePayload() {
   return {
@@ -20,8 +42,8 @@ function createDefaultRuntimeProfilePayload() {
       },
       {
         name: "quantIndicators",
-        enabled: false,
-        reason: "시장 데이터 폴링 단계 이후 활성화"
+        enabled: true,
+        reason: "정량 지표 계산 준비됨"
       },
       {
         name: "llmInsights",
@@ -113,7 +135,24 @@ function createAppMessageHandler(options = {}) {
   const tossCredentialRepository = new StoredTossCredentialRepository(
     path.join(storageDirectory, "toss-credentials.local.json")
   );
+  const stockReferenceCache = new StoredStockReferenceCache(
+    path.join(storageDirectory, "stock-reference-cache.local.json")
+  );
+  const marketDataSnapshotRepository = new StoredMarketDataSnapshotRepository(
+    path.join(storageDirectory, "market-data-cache.local.json")
+  );
+  const quantIndicatorSnapshotRepository = new StoredQuantIndicatorSnapshotRepository(
+    path.join(storageDirectory, "quant-indicator-cache.local.json")
+  );
   const tossOAuthClient = new TossOAuthClient(options.fetcher || fetch);
+  const tossAccessTokenProvider = new CachedTossAccessTokenProvider(
+    tossCredentialRepository,
+    tossOAuthClient
+  );
+  const tossStockInfoClient = new TossStockInfoClient(options.fetcher || fetch);
+  const rateLimitAwareTossClient = new RateLimitAwareTossClient(options.fetcher || fetch);
+  const tossMarketDataClient = new TossMarketDataClient(rateLimitAwareTossClient);
+  const tossMarketInfoClient = new TossMarketInfoClient(rateLimitAwareTossClient);
 
   return async function handleAppMessage(rawMessage, nowIso) {
     const runtimeResponse = handleRuntimeProfileMessage(rawMessage, nowIso);
@@ -138,7 +177,14 @@ function createAppMessageHandler(options = {}) {
         occurredAt,
         watchlistRepository,
         tossCredentialRepository,
-        tossOAuthClient
+        tossOAuthClient,
+        stockReferenceCache,
+        tossAccessTokenProvider,
+        tossStockInfoClient,
+        marketDataSnapshotRepository,
+        quantIndicatorSnapshotRepository,
+        tossMarketDataClient,
+        tossMarketInfoClient
       });
     } catch (error) {
       return createAppError(
@@ -248,6 +294,78 @@ async function handleAppRequest(context) {
           : [],
         context.occurredAt
       )
+    );
+  }
+
+  if (context.event === contract.events.stockReferenceVerifyRequest) {
+    return createAppResponse(
+      contract.events.stockReferenceVerifyResponse,
+      context.requestId,
+      context.occurredAt,
+      await verifyStockReferences(context, context.payload.rawInput)
+    );
+  }
+
+  if (context.event === contract.events.watchlistCreateVerifiedRequest) {
+    return createAppResponse(
+      contract.events.watchlistCreateVerifiedResponse,
+      context.requestId,
+      context.occurredAt,
+      await createVerifiedWatchCard(context)
+    );
+  }
+
+  if (context.event === contract.events.marketDataRefreshWatchlistRequest) {
+    return createAppResponse(
+      contract.events.marketDataRefreshWatchlistResponse,
+      context.requestId,
+      context.occurredAt,
+      await refreshMarketDataForWatchlist(context, context.payload)
+    );
+  }
+
+  if (context.event === contract.events.marketDataRefreshCardRequest) {
+    return createAppResponse(
+      contract.events.marketDataRefreshCardResponse,
+      context.requestId,
+      context.occurredAt,
+      await refreshMarketDataForCard(context, context.payload)
+    );
+  }
+
+  if (context.event === contract.events.marketDataLatestSnapshotsRequest) {
+    return createAppResponse(
+      contract.events.marketDataLatestSnapshotsResponse,
+      context.requestId,
+      context.occurredAt,
+      await readLatestMarketDataSnapshots(context, context.payload)
+    );
+  }
+
+  if (context.event === contract.events.quantIndicatorsRefreshWatchlistRequest) {
+    return createAppResponse(
+      contract.events.quantIndicatorsRefreshWatchlistResponse,
+      context.requestId,
+      context.occurredAt,
+      await refreshQuantIndicatorsForWatchlist(context, context.payload)
+    );
+  }
+
+  if (context.event === contract.events.quantIndicatorsRefreshCardRequest) {
+    return createAppResponse(
+      contract.events.quantIndicatorsRefreshCardResponse,
+      context.requestId,
+      context.occurredAt,
+      await refreshQuantIndicatorsForCard(context, context.payload)
+    );
+  }
+
+  if (context.event === contract.events.quantIndicatorsLatestSnapshotsRequest) {
+    return createAppResponse(
+      contract.events.quantIndicatorsLatestSnapshotsResponse,
+      context.requestId,
+      context.occurredAt,
+      await readLatestQuantIndicatorSnapshots(context, context.payload)
     );
   }
 

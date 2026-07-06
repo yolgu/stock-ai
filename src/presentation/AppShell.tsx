@@ -1,10 +1,10 @@
 import {
+  AlertTriangle,
   Archive,
   Bell,
   EyeOff,
   Plus,
   RotateCcw,
-  Save,
   Settings,
   ShieldCheck,
   Trash2,
@@ -14,36 +14,60 @@ import { type FormEvent, type ReactElement, useState } from "react";
 
 import type { RuntimeProfileDto } from "../domain/runtime/AppRuntimeProfile";
 import type { WatchStockCardDto } from "../domain/watchlist/Watchlist";
+import type { MarketDataClient } from "../infrastructure/neutralino/NeutralinoMarketDataClient";
+import type { QuantIndicatorClient } from "../infrastructure/neutralino/NeutralinoQuantIndicatorClient";
+import type { StockReferenceClient } from "../infrastructure/neutralino/NeutralinoStockReferenceClient";
 import type { TossSettingsClient } from "../infrastructure/neutralino/NeutralinoTossSettingsClient";
 import type { WatchlistClient } from "../infrastructure/neutralino/NeutralinoWatchlistClient";
+import type {
+  MarketDataSnapshotPayload,
+  QuantIndicatorSnapshotPayload,
+  VerifiedStockReferencePayload
+} from "../shared/contracts/app-runtime-contract";
+import { useMarketDataPolling } from "./useMarketDataPolling";
+import { useQuantIndicators } from "./useQuantIndicators";
+import { useStockReferenceVerification } from "./useStockReferenceVerification";
 import { useTossCredentialSettings } from "./useTossCredentialSettings";
 import { useWatchlist } from "./useWatchlist";
 
 export interface AppShellProps {
   runtimeProfile: RuntimeProfileDto;
   watchlistClient: WatchlistClient;
+  stockReferenceClient: StockReferenceClient;
+  marketDataClient: MarketDataClient;
+  quantIndicatorClient: QuantIndicatorClient;
   tossSettingsClient: TossSettingsClient;
 }
 
-interface CardFormState {
-  market: string;
-  symbol: string;
-  displayName: string;
-  groupId: string;
+const stockMarketOptions = ["NASDAQ", "NYSE", "AMEX", "KOSPI", "KOSDAQ"] as const;
+
+type StockMarketOption = (typeof stockMarketOptions)[number];
+
+interface TickerAddFormState {
+  market: StockMarketOption;
+  ticker: string;
   tags: string;
   memo: string;
 }
+
+type PendingTickerConfirmation =
+  | {
+      kind: "marketMismatch";
+      identity: VerifiedStockReferencePayload;
+    }
+  | {
+      kind: "risk";
+      identity: VerifiedStockReferencePayload;
+    };
 
 interface TossCredentialFormState {
   clientId: string;
   clientSecret: string;
 }
 
-const initialCardFormState: CardFormState = {
+const initialTickerAddFormState: TickerAddFormState = {
   market: "NASDAQ",
-  symbol: "",
-  displayName: "",
-  groupId: "",
+  ticker: "",
   tags: "",
   memo: ""
 };
@@ -56,32 +80,45 @@ const initialCredentialFormState: TossCredentialFormState = {
 export function AppShell({
   runtimeProfile,
   watchlistClient,
+  stockReferenceClient,
+  marketDataClient,
+  quantIndicatorClient,
   tossSettingsClient
 }: AppShellProps): ReactElement {
   const watchlist = useWatchlist(watchlistClient);
+  const stockReference = useStockReferenceVerification(stockReferenceClient);
   const tossSettings = useTossCredentialSettings(tossSettingsClient);
   const [isAddFormOpen, setIsAddFormOpen] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
-  const [cardForm, setCardForm] = useState<CardFormState>(initialCardFormState);
+  const [tickerAddForm, setTickerAddForm] =
+    useState<TickerAddFormState>(initialTickerAddFormState);
+  const [pendingTickerConfirmation, setPendingTickerConfirmation] =
+    useState<PendingTickerConfirmation | null>(null);
   const [credentialForm, setCredentialForm] =
     useState<TossCredentialFormState>(initialCredentialFormState);
   const activeCards = watchlist.watchlist.activeCards;
+  const marketData = useMarketDataPolling(marketDataClient, {
+    activeCards,
+    credentials: tossSettings.credentials
+  });
+  const quantIndicators = useQuantIndicators(quantIndicatorClient, {
+    activeCards,
+    credentials: tossSettings.credentials,
+    marketDataStatus: marketData.status
+  });
+  const canVerifySymbols =
+    tossSettings.credentials.configured &&
+    tossSettings.credentials.connectionStatus !== "invalid";
 
-  const submitCard = (event: FormEvent<HTMLFormElement>): void => {
+  const submitTickerAddition = (event: FormEvent<HTMLFormElement>): void => {
     event.preventDefault();
-    void watchlist
-      .createCard({
-        market: cardForm.market,
-        symbol: cardForm.symbol,
-        displayName: cardForm.displayName,
-        groupId: cardForm.groupId.trim() === "" ? null : cardForm.groupId.trim(),
-        tags: splitTags(cardForm.tags),
-        memo: cardForm.memo
-      })
-      .then(() => {
-        setCardForm(initialCardFormState);
-        setIsAddFormOpen(false);
-      });
+
+    if (!canVerifySymbols) {
+      setIsSettingsOpen(true);
+      return;
+    }
+
+    void verifyAndCreateTickerCard();
   };
 
   const submitCredentials = (event: FormEvent<HTMLFormElement>): void => {
@@ -89,6 +126,90 @@ export function AppShell({
     void tossSettings.saveCredentials(credentialForm).then(() => {
       setCredentialForm(initialCredentialFormState);
     });
+  };
+
+  const verifyAndCreateTickerCard = async (): Promise<void> => {
+    const ticker = tickerAddForm.ticker.trim().toUpperCase();
+
+    if (ticker === "") {
+      return;
+    }
+
+    setPendingTickerConfirmation(null);
+    const verification = await stockReference.verify(ticker);
+
+    if (verification === null || verification.verified.length !== 1) {
+      return;
+    }
+
+    continueVerifiedIdentity(verification.verified[0]);
+  };
+
+  const continueVerifiedIdentity = (
+    identity: VerifiedStockReferencePayload,
+    options: { allowMarketMismatch: boolean } = { allowMarketMismatch: false }
+  ): void => {
+    if (!options.allowMarketMismatch && identity.market !== tickerAddForm.market) {
+      setPendingTickerConfirmation({ kind: "marketMismatch", identity });
+      return;
+    }
+
+    if (identity.requiresConfirmation) {
+      setPendingTickerConfirmation({ kind: "risk", identity });
+      return;
+    }
+
+    createVerifiedCard(identity, false);
+  };
+
+  const confirmPendingTicker = (): void => {
+    if (pendingTickerConfirmation === null) {
+      return;
+    }
+
+    if (pendingTickerConfirmation.kind === "marketMismatch") {
+      continueVerifiedIdentity(pendingTickerConfirmation.identity, {
+        allowMarketMismatch: true
+      });
+      return;
+    }
+
+    createVerifiedCard(pendingTickerConfirmation.identity, true);
+  };
+
+  const createVerifiedCard = (
+    identity: VerifiedStockReferencePayload,
+    confirmedRisk: boolean
+  ): void => {
+    void stockReference
+      .createVerifiedCard({
+        symbol: identity.symbol,
+        confirmedRisk,
+        groupId: null,
+        tags: splitTags(tickerAddForm.tags),
+        memo: tickerAddForm.memo
+      })
+      .then((result) => {
+        if (result === null) {
+          return;
+        }
+
+        if (result.type === "created") {
+          watchlist.applyWatchlist(result.watchlist, "검증된 카드를 추가했습니다.");
+          setTickerAddForm(initialTickerAddFormState);
+          setPendingTickerConfirmation(null);
+          stockReference.clear();
+          setIsAddFormOpen(false);
+          return;
+        }
+
+        watchlist.applyWatchlist(
+          result.watchlist,
+          result.type === "duplicate-card"
+            ? "이미 같은 시장과 심볼의 카드가 있습니다."
+            : "보관된 카드가 있어 복원할 수 있습니다."
+        );
+      });
   };
 
   return (
@@ -140,59 +261,95 @@ export function AppShell({
         </section>
 
         {isAddFormOpen ? (
-          <form className="inline-form" aria-label="종목 카드 추가" onSubmit={submitCard}>
+          <form
+            className="inline-form symbol-intake-form"
+            aria-label="종목 카드 추가"
+            onSubmit={submitTickerAddition}
+          >
             <label>
               시장
-              <input
-                value={cardForm.market}
+              <select
+                value={tickerAddForm.market}
                 onChange={(event) =>
-                  setCardForm((current) => ({ ...current, market: event.target.value }))
-                }
-              />
-            </label>
-            <label>
-              심볼
-              <input
-                value={cardForm.symbol}
-                onChange={(event) =>
-                  setCardForm((current) => ({ ...current, symbol: event.target.value }))
-                }
-              />
-            </label>
-            <label>
-              표시 이름
-              <input
-                value={cardForm.displayName}
-                onChange={(event) =>
-                  setCardForm((current) => ({
+                  setTickerAddForm((current) => ({
                     ...current,
-                    displayName: event.target.value
+                    market: event.target.value as StockMarketOption
                   }))
                 }
+              >
+                {stockMarketOptions.map((market) => (
+                  <option value={market} key={market}>
+                    {market}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              티커
+              <input
+                value={tickerAddForm.ticker}
+                placeholder="MU"
+                required
+                onChange={(event) => {
+                  setPendingTickerConfirmation(null);
+                  setTickerAddForm((current) => ({
+                    ...current,
+                    ticker: event.target.value.toUpperCase()
+                  }));
+                }}
               />
             </label>
+            <button
+              className="primary-button"
+              type="submit"
+              disabled={stockReference.status === "loading"}
+            >
+              <Plus size={16} />
+              추가
+            </button>
             <label>
               태그
               <input
-                value={cardForm.tags}
+                value={tickerAddForm.tags}
                 onChange={(event) =>
-                  setCardForm((current) => ({ ...current, tags: event.target.value }))
+                  setTickerAddForm((current) => ({ ...current, tags: event.target.value }))
                 }
               />
             </label>
             <label className="inline-form__wide">
               메모
               <input
-                value={cardForm.memo}
+                value={tickerAddForm.memo}
                 onChange={(event) =>
-                  setCardForm((current) => ({ ...current, memo: event.target.value }))
+                  setTickerAddForm((current) => ({ ...current, memo: event.target.value }))
                 }
               />
             </label>
-            <button className="primary-button" type="submit">
-              <Save size={16} />
-              카드 저장
-            </button>
+            {!canVerifySymbols ? (
+              <div className="form-alert inline-form__full">
+                <AlertTriangle size={16} />
+                <span>Toss API 설정 후 종목을 추가할 수 있습니다.</span>
+                <button
+                  className="secondary-button"
+                  type="button"
+                  onClick={() => setIsSettingsOpen(true)}
+                >
+                  설정 열기
+                </button>
+              </div>
+            ) : null}
+            {pendingTickerConfirmation !== null ? (
+              <div className="form-alert inline-form__full">
+                <AlertTriangle size={16} />
+                <span>{formatTickerConfirmationMessage(pendingTickerConfirmation)}</span>
+                <button className="secondary-button" type="button" onClick={confirmPendingTicker}>
+                  {formatTickerConfirmationAction(pendingTickerConfirmation)}
+                </button>
+              </div>
+            ) : null}
+            {stockReference.message !== null ? (
+              <p className="status-message inline-form__full">{stockReference.message}</p>
+            ) : null}
           </form>
         ) : null}
 
@@ -203,7 +360,7 @@ export function AppShell({
                 <ShieldCheck size={24} />
               </div>
               <h2>분석 카드가 없습니다</h2>
-              <p>다음 단계에서 심볼 입력과 로컬 카드 저장을 연결합니다.</p>
+              <p>시장과 티커를 입력해 Toss 종목정보 검증 후 카드를 추가합니다.</p>
             </div>
           </section>
         ) : (
@@ -212,6 +369,8 @@ export function AppShell({
               <WatchStockCardView
                 card={card}
                 key={card.id}
+                marketDataSnapshot={marketData.snapshotsByCardId[card.id] ?? null}
+                quantIndicatorSnapshot={quantIndicators.snapshotsByCardId[card.id] ?? null}
                 onArchive={() => void watchlist.archiveCard(card.id)}
                 onDelete={() => void watchlist.deleteCard(card.id)}
                 onHide={() => void watchlist.hideCard(card.id)}
@@ -353,6 +512,8 @@ export function AppShell({
 
 interface WatchStockCardViewProps {
   card: WatchStockCardDto;
+  marketDataSnapshot: MarketDataSnapshotPayload | null;
+  quantIndicatorSnapshot: QuantIndicatorSnapshotPayload | null;
   onArchive(): void;
   onDelete(): void;
   onHide(): void;
@@ -360,6 +521,8 @@ interface WatchStockCardViewProps {
 
 function WatchStockCardView({
   card,
+  marketDataSnapshot,
+  quantIndicatorSnapshot,
   onArchive,
   onDelete,
   onHide
@@ -373,9 +536,36 @@ function WatchStockCardView({
           </p>
           <h2>{card.displayName}</h2>
         </div>
-        <span className="watch-card__status">분석 대기</span>
+        <span className={formatMarketDataStatusClassName(marketDataSnapshot)}>
+          {formatMarketDataStatus(marketDataSnapshot)}
+        </span>
       </header>
       {card.memo.trim() !== "" ? <p className="watch-card__memo">{card.memo}</p> : null}
+      <section className="quant-card-state" aria-label={`${card.symbol} 정량 지표 상태`}>
+        <div>
+          <span className={formatQuantDecisionClassName(quantIndicatorSnapshot)}>
+            {formatQuantDecisionLabel(quantIndicatorSnapshot)}
+          </span>
+          <span className="quant-card-state__time">
+            {formatQuantUpdatedAt(quantIndicatorSnapshot)}
+          </span>
+        </div>
+        {quantIndicatorSnapshot !== null ? (
+          <>
+            <p className="quant-card-state__next">{quantIndicatorSnapshot.nextCheckLabel}</p>
+            <div className="quant-signal-row">
+              {quantIndicatorSnapshot.signals.slice(0, 3).map((signal) => (
+                <span
+                  className={`quant-signal quant-signal--${signal.severity}`}
+                  key={signal.key}
+                >
+                  {signal.label}
+                </span>
+              ))}
+            </div>
+          </>
+        ) : null}
+      </section>
       {card.tags.length > 0 ? (
         <div className="tag-row">
           {card.tags.map((tag) => (
@@ -447,4 +637,90 @@ function formatConnectionStatus(status: string): string {
   };
 
   return labels[status] ?? "확인 필요";
+}
+
+function formatMarketDataStatus(snapshot: MarketDataSnapshotPayload | null): string {
+  if (snapshot === null) {
+    return "시장 데이터 대기";
+  }
+
+  if (snapshot.quality === "unavailable" || snapshot.quality === "degraded") {
+    return "수집 오류";
+  }
+
+  if (snapshot.quality === "partial") {
+    return "부분 수집";
+  }
+
+  if (snapshot.freshness === "stale") {
+    return "오래됨";
+  }
+
+  return `업데이트 ${formatSnapshotTime(snapshot.capturedAt)}`;
+}
+
+function formatMarketDataStatusClassName(snapshot: MarketDataSnapshotPayload | null): string {
+  if (snapshot === null) {
+    return "watch-card__status watch-card__status--waiting";
+  }
+
+  if (snapshot.quality === "unavailable" || snapshot.quality === "degraded") {
+    return "watch-card__status watch-card__status--danger";
+  }
+
+  if (snapshot.quality === "partial" || snapshot.freshness === "stale") {
+    return "watch-card__status watch-card__status--warning";
+  }
+
+  return "watch-card__status watch-card__status--ready";
+}
+
+function formatQuantDecisionLabel(snapshot: QuantIndicatorSnapshotPayload | null): string {
+  return snapshot?.decisionLabel ?? "지표 대기";
+}
+
+function formatQuantUpdatedAt(snapshot: QuantIndicatorSnapshotPayload | null): string {
+  if (snapshot === null) {
+    return "지표 업데이트 대기";
+  }
+
+  return `지표 업데이트 ${formatSnapshotTime(snapshot.calculatedAt)}`;
+}
+
+function formatQuantDecisionClassName(snapshot: QuantIndicatorSnapshotPayload | null): string {
+  if (snapshot === null) {
+    return "quant-decision quant-decision--waiting";
+  }
+
+  const classNames: Record<string, string> = {
+    watch: "quant-decision quant-decision--watch",
+    confirmationWaiting: "quant-decision quant-decision--waiting",
+    riskHigh: "quant-decision quant-decision--risk",
+    invalidated: "quant-decision quant-decision--invalidated",
+    dataInsufficient: "quant-decision quant-decision--insufficient"
+  };
+
+  return classNames[snapshot.decisionStatus] ?? "quant-decision quant-decision--waiting";
+}
+
+function formatSnapshotTime(capturedAt: string): string {
+  const match = capturedAt.match(/T(\d{2}:\d{2}:\d{2})/);
+
+  return match?.[1] ?? "--:--:--";
+}
+
+function formatTickerConfirmationMessage(confirmation: PendingTickerConfirmation): string {
+  if (confirmation.kind === "marketMismatch") {
+    return `${confirmation.identity.symbol}는 ${confirmation.identity.market} 종목입니다.`;
+  }
+
+  return `${confirmation.identity.symbol}는 상태 확인이 필요한 종목입니다.`;
+}
+
+function formatTickerConfirmationAction(confirmation: PendingTickerConfirmation): string {
+  if (confirmation.kind === "marketMismatch") {
+    return `${confirmation.identity.market}으로 추가`;
+  }
+
+  return "확인 후 추가";
 }

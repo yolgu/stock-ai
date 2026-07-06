@@ -19,6 +19,7 @@ export interface UseWatchlistResult extends WatchlistViewState {
   archiveCard(cardId: string): Promise<void>;
   restoreCard(cardId: string): Promise<void>;
   deleteCard(cardId: string): Promise<void>;
+  applyWatchlist(watchlist: WatchlistListPayload, message: string): void;
 }
 
 const emptyWatchlist: WatchlistListPayload = {
@@ -136,6 +137,17 @@ export function useWatchlist(watchlistClient: WatchlistClient): UseWatchlistResu
     [showError, watchlistClient]
   );
 
+  const applyWatchlist = useCallback(
+    (watchlist: WatchlistListPayload, message: string): void => {
+      setState({
+        status: "ready",
+        watchlist,
+        message
+      });
+    },
+    []
+  );
+
   return {
     ...state,
     refresh,
@@ -143,6 +155,7 @@ export function useWatchlist(watchlistClient: WatchlistClient): UseWatchlistResu
     hideCard,
     archiveCard,
     restoreCard,
-    deleteCard
+    deleteCard,
+    applyWatchlist
   };
 }
