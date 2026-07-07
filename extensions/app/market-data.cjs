@@ -532,31 +532,57 @@ function mapCalendarToMarketSession(country, calendar, now) {
     return { country, state: "closed", source: "fallback" };
   }
 
-  const sessionMap = country === "KR"
-    ? today.integrated
-    : {
-        preMarket: today.preMarket || today.dayMarket,
-        regularMarket: today.regularMarket,
-        afterMarket: today.afterMarket
-      };
+  const activeSession = findActiveMarketSession(country, calendar, now);
 
-  if (sessionMap === null || sessionMap === undefined) {
+  if (activeSession !== null) {
+    return activeSession;
+  }
+
+  if (readMarketSessionsForDay(country, today).length === 0) {
     return { country, state: "holiday", source: "calendar" };
   }
 
-  if (isWithinSession(now, sessionMap.regularMarket)) {
-    return { country, state: "regular", source: "calendar" };
-  }
-
-  if (isWithinSession(now, sessionMap.preMarket)) {
-    return { country, state: "pre", source: "calendar" };
-  }
-
-  if (isWithinSession(now, sessionMap.afterMarket)) {
-    return { country, state: "after", source: "calendar" };
-  }
-
   return { country, state: "closed", source: "calendar" };
+}
+
+function findActiveMarketSession(country, calendar, now) {
+  const marketDays = [
+    calendar.previousBusinessDay,
+    calendar.today,
+    calendar.nextBusinessDay
+  ].filter((marketDay) => marketDay !== null && marketDay !== undefined);
+
+  for (const marketDay of marketDays) {
+    for (const marketSession of readMarketSessionsForDay(country, marketDay)) {
+      if (isWithinSession(now, marketSession.session)) {
+        return { country, state: marketSession.state, source: "calendar" };
+      }
+    }
+  }
+
+  return null;
+}
+
+function readMarketSessionsForDay(country, marketDay) {
+  if (marketDay === null || marketDay === undefined) {
+    return [];
+  }
+
+  const sessions = country === "KR"
+    ? [
+        { state: "regular", session: marketDay.integrated && marketDay.integrated.regularMarket },
+        { state: "pre", session: marketDay.integrated && marketDay.integrated.preMarket },
+        { state: "after", session: marketDay.integrated && marketDay.integrated.afterMarket }
+      ]
+    : [
+        { state: "regular", session: marketDay.regularMarket },
+        { state: "pre", session: marketDay.preMarket },
+        { state: "pre", session: marketDay.dayMarket },
+        { state: "after", session: marketDay.afterMarket }
+      ];
+
+  return sessions.filter((marketSession) => marketSession.session !== null &&
+    marketSession.session !== undefined);
 }
 
 function isWithinSession(now, session) {

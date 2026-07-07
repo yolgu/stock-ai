@@ -1,4 +1,4 @@
-# Step 09 PRD: Backtesting Engine And Strategy Report
+# Step 13 PRD: Backtesting Engine And Strategy Report
 
 ## Goal
 
@@ -14,7 +14,7 @@ The user sees whether a condition such as `VWAP reclaim + CVD recovery + spread 
 - Historical candle and derived indicator reconstruction.
 - Strategy result metrics.
 - Per-card backtest report.
-- LLM-ready summary input for Step 08 manual insight refresh.
+- LLM-ready summary input for Step 12 manual insight refresh.
 
 ## Non-Goals
 
@@ -76,5 +76,4 @@ The user sees whether a condition such as `VWAP reclaim + CVD recovery + spread 
 ## Dependencies
 
 - Step 05 quant indicator engine.
-- Step 08 insight snapshot structure for optional summary attachment.
-
+- Step 12 insight snapshot structure for optional summary attachment.

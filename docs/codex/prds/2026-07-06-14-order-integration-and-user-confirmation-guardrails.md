@@ -1,4 +1,4 @@
-# Step 10 PRD: Order Integration And User Confirmation Guardrails
+# Step 14 PRD: Order Integration And User Confirmation Guardrails
 
 ## Goal
 
@@ -86,5 +86,4 @@ The user can review buying power, sellable quantity, commissions, stop distance,
 ## Dependencies
 
 - Step 05 quant indicator engine.
-- Step 08 LLM insight isolation policy.
-
+- Step 12 LLM insight isolation policy.

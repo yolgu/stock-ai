@@ -73,7 +73,16 @@ const {
   ): Promise<{
     refreshedAt: string;
     nextPollDelayMs: number;
-    snapshots: Array<{ adapterErrors: unknown[] }>;
+    snapshots: Array<{
+      adapterErrors: unknown[];
+      observations?: {
+        marketSession?: {
+          country: string;
+          state: string;
+          source: string;
+        };
+      };
+    }>;
   }>;
 };
 
@@ -182,6 +191,157 @@ describe("TossMarketDataClient", () => {
 });
 
 describe("refreshMarketDataForWatchlist", () => {
+  it("keeps US day-market polling at 15 seconds when pre-market exists later on the same Korean calendar day", async () => {
+    const context = {
+      occurredAt: "2026-07-07T03:30:00.000Z",
+      watchlistRepository: {
+        list: async () => ({
+          activeCards: [
+            {
+              id: "card-1",
+              market: "NASDAQ",
+              symbol: "MU"
+            }
+          ]
+        })
+      },
+      tossAccessTokenProvider: {
+        readAccessToken: async () => "access-token-that-must-not-leak"
+      },
+      marketDataSnapshotRepository: {
+        readLatest: async () => [],
+        saveAll: async (): Promise<void> => {}
+      },
+      tossMarketDataClient: {
+        fetchPrices: async () => [
+          {
+            symbol: "MU",
+            lastPrice: "194.93",
+            currency: "USD",
+            timestamp: "2026-07-07T12:30:00.000+09:00"
+          }
+        ],
+        fetchTrades: async () => [],
+        fetchOrderbook: async () => null,
+        fetchCandles: async (_symbol: string, interval: "1m" | "1d") => ({
+          interval,
+          candles: [],
+          nextBefore: null
+        })
+      },
+      tossMarketInfoClient: {
+        fetchMarketCalendar: async () => ({
+          today: {
+            date: "2026-07-07",
+            dayMarket: {
+              startTime: "2026-07-07T09:00:00.000+09:00",
+              endTime: "2026-07-07T17:00:00.000+09:00"
+            },
+            preMarket: {
+              startTime: "2026-07-07T17:00:00.000+09:00",
+              endTime: "2026-07-07T22:30:00.000+09:00"
+            },
+            regularMarket: {
+              startTime: "2026-07-07T22:30:00.000+09:00",
+              endTime: "2026-07-08T05:00:00.000+09:00"
+            },
+            afterMarket: {
+              startTime: "2026-07-08T05:00:00.000+09:00",
+              endTime: "2026-07-08T08:50:00.000+09:00"
+            }
+          }
+        }),
+        fetchExchangeRate: async () => null
+      }
+    };
+
+    const result = await refreshMarketDataForWatchlist(context, {
+      visibleCardIds: ["card-1"]
+    });
+
+    expect(result.nextPollDelayMs).toBe(15_000);
+    expect(result.snapshots[0]?.observations?.marketSession).toEqual({
+      country: "US",
+      state: "pre",
+      source: "calendar"
+    });
+  });
+
+  it("keeps US regular-session polling at 15 seconds when the session is on the previous Korean calendar day", async () => {
+    const savedSnapshots: unknown[] = [];
+    const context = {
+      occurredAt: "2026-07-06T16:13:00.000Z",
+      watchlistRepository: {
+        list: async () => ({
+          activeCards: [
+            {
+              id: "card-1",
+              market: "NASDAQ",
+              symbol: "MU"
+            }
+          ]
+        })
+      },
+      tossAccessTokenProvider: {
+        readAccessToken: async () => "access-token-that-must-not-leak"
+      },
+      marketDataSnapshotRepository: {
+        readLatest: async () => [],
+        saveAll: async (snapshots: unknown[]): Promise<void> => {
+          savedSnapshots.push(...snapshots);
+        }
+      },
+      tossMarketDataClient: {
+        fetchPrices: async () => [
+          {
+            symbol: "MU",
+            lastPrice: "194.93",
+            currency: "USD",
+            timestamp: "2026-07-07T01:13:00.000+09:00"
+          }
+        ],
+        fetchTrades: async () => [],
+        fetchOrderbook: async () => null,
+        fetchCandles: async (_symbol: string, interval: "1m" | "1d") => ({
+          interval,
+          candles: [],
+          nextBefore: null
+        })
+      },
+      tossMarketInfoClient: {
+        fetchMarketCalendar: async () => ({
+          today: {
+            date: "2026-07-07",
+            regularMarket: {
+              startTime: "2026-07-07T22:30:00.000+09:00",
+              endTime: "2026-07-08T05:00:00.000+09:00"
+            }
+          },
+          previousBusinessDay: {
+            date: "2026-07-06",
+            regularMarket: {
+              startTime: "2026-07-06T22:30:00.000+09:00",
+              endTime: "2026-07-07T05:00:00.000+09:00"
+            }
+          }
+        }),
+        fetchExchangeRate: async () => null
+      }
+    };
+
+    const result = await refreshMarketDataForWatchlist(context, {
+      visibleCardIds: ["card-1"]
+    });
+
+    expect(result.nextPollDelayMs).toBe(15_000);
+    expect(result.snapshots[0]?.observations?.marketSession).toEqual({
+      country: "US",
+      state: "regular",
+      source: "calendar"
+    });
+    expect(savedSnapshots).toHaveLength(1);
+  });
+
   it("uses rate-limit retry-after errors to delay the next polling cycle", async () => {
     const savedSnapshots: unknown[] = [];
     const rateLimitedError = new MarketDataError(

@@ -15,10 +15,12 @@ export interface WatchlistViewState {
 export interface UseWatchlistResult extends WatchlistViewState {
   refresh(): Promise<void>;
   createCard(input: CreateWatchCardPayload): Promise<void>;
+  updateCard(cardId: string, input: Partial<CreateWatchCardPayload>): Promise<void>;
   hideCard(cardId: string): Promise<void>;
   archiveCard(cardId: string): Promise<void>;
   restoreCard(cardId: string): Promise<void>;
   deleteCard(cardId: string): Promise<void>;
+  reorderCards(orderedCardIds: string[]): Promise<void>;
   applyWatchlist(watchlist: WatchlistListPayload, message: string): void;
 }
 
@@ -101,6 +103,18 @@ export function useWatchlist(watchlistClient: WatchlistClient): UseWatchlistResu
     [showError, watchlistClient]
   );
 
+  const updateCard = useCallback(
+    async (cardId: string, input: Partial<CreateWatchCardPayload>): Promise<void> => {
+      try {
+        const result = await watchlistClient.update(cardId, input);
+        setState({ status: "ready", watchlist: result.watchlist, message: "카드를 저장했습니다." });
+      } catch (error) {
+        showError(error);
+      }
+    },
+    [showError, watchlistClient]
+  );
+
   const archiveCard = useCallback(
     async (cardId: string): Promise<void> => {
       try {
@@ -137,6 +151,18 @@ export function useWatchlist(watchlistClient: WatchlistClient): UseWatchlistResu
     [showError, watchlistClient]
   );
 
+  const reorderCards = useCallback(
+    async (orderedCardIds: string[]): Promise<void> => {
+      try {
+        const watchlist = await watchlistClient.reorder(orderedCardIds);
+        setState({ status: "ready", watchlist, message: "카드 순서를 변경했습니다." });
+      } catch (error) {
+        showError(error);
+      }
+    },
+    [showError, watchlistClient]
+  );
+
   const applyWatchlist = useCallback(
     (watchlist: WatchlistListPayload, message: string): void => {
       setState({
@@ -152,10 +178,12 @@ export function useWatchlist(watchlistClient: WatchlistClient): UseWatchlistResu
     ...state,
     refresh,
     createCard,
+    updateCard,
     hideCard,
     archiveCard,
     restoreCard,
     deleteCard,
+    reorderCards,
     applyWatchlist
   };
 }

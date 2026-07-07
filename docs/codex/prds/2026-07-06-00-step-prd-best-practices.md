@@ -57,10 +57,13 @@ Core object categories:
 4. Market Data Polling And Cache
 5. Quant Indicator Engine And Card Status
 6. Watchlist Dashboard And Detail UI
-7. News/Event Input And Timeline
-8. Manual LLM Insight Engine With Codex OAuth Proxy
-9. Backtesting Engine And Strategy Report
-10. Order Integration And User Confirmation Guardrails
+7. Market Context And Basic Returns
+8. Indicator Explanation Model
+9. Beginner Explanation Popover UI
+10. LLM-Free Deterministic Indicator Expansion
+11. News/Event Input And Timeline
+12. Manual LLM Insight Engine With Codex OAuth Proxy
+13. Backtesting Engine And Strategy Report
+14. Order Integration And User Confirmation Guardrails
 
-These steps build from stable local product state to external data, deterministic calculations, LLM insight, historical validation, and finally guarded order integration.
-
+These steps build from stable local product state to external data, deterministic calculations, explainable learning surfaces, LLM insight, historical validation, and finally guarded order integration.

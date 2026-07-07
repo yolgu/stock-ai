@@ -56,10 +56,10 @@ The user can monitor many analysis cards at once, then open a detailed decision-
 ## UI Behavior
 
 - The dashboard shows multiple cards, not one large hero card.
-- Cards avoid raw current price, raw volume, candlestick chart, and orderbook table.
+- Cards avoid raw volume, candlestick chart, and orderbook table, while later steps may show compact price coordinates.
 - Cards show derived qualitative status.
 - Detail panel shows why a card is in its current state through deterministic checklist rows.
-- AI insight area is visibly stale until the user requests manual refresh in Step 08.
+- AI insight area is visibly stale until the user requests manual refresh in Step 12.
 
 ## Acceptance Criteria
 
@@ -79,4 +79,3 @@ The user can monitor many analysis cards at once, then open a detailed decision-
 ## Dependencies
 
 - Step 05 quant indicator engine and card status.
-

@@ -40,7 +40,7 @@ afterEach(async () => {
 });
 
 describe("createQuantIndicatorSnapshot", () => {
-  it("calculates deterministic VWAP, estimated CVD, spread, ATR, supply pressure, and risk reward", () => {
+  it("calculates deterministic VWAP, estimated CVD, spread, profit taking pressure, ATR, supply pressure, and risk reward", () => {
     const snapshot = createQuantIndicatorSnapshot({
       marketDataSnapshot: createCompleteMarketDataSnapshot(),
       calculatedAt: "2026-07-06T09:35:00.000Z"
@@ -52,9 +52,20 @@ describe("createQuantIndicatorSnapshot", () => {
       market: "NASDAQ",
       symbol: "MU",
       quality: "complete",
-      decisionStatus: "watch",
-      decisionLabel: "관망",
+      decisionStatus: "confirmationWaiting",
+      decisionLabel: "확인 대기",
       indicators: {
+        basicReturn: {
+          status: "available",
+          currentPrice: "103.5000",
+          referencePrice: "103.5000",
+          absoluteChange: "0.0000",
+          simpleReturnPercent: 0,
+          logReturnPercent: 0,
+          currency: "USD",
+          referenceLabel: "전일 종가",
+          label: "전일 종가 대비 보합"
+        },
         vwap: {
           status: "available",
           value: "101.7500",
@@ -80,7 +91,21 @@ describe("createQuantIndicatorSnapshot", () => {
         },
         supplyPressure: {
           status: "available",
+          pocPrice: "102.0000",
+          overheadRatio: 0,
           label: "매물대 부담 낮음"
+        },
+        profitTakingPressure: {
+          status: "available",
+          profitLongRatio: 1,
+          weightedProfitPressure: 0.02,
+          vwapAtrExtension: 1,
+          sellFlowPressure: 0,
+          askBookPressure: 0,
+          volumeExpansion: 0.38,
+          score: 59,
+          label: "차익실현 압박 경계",
+          severity: "warning"
         },
         riskReward: {
           status: "available",
@@ -93,9 +118,35 @@ describe("createQuantIndicatorSnapshot", () => {
       expect.arrayContaining([
         expect.objectContaining({ key: "vwap", label: "VWAP 위 안착" }),
         expect.objectContaining({ key: "cvd", status: "estimated" }),
-        expect.objectContaining({ key: "spread", label: "스프레드 정상" })
+        expect.objectContaining({ key: "profitTakingPressure", label: "차익실현 압박 경계" })
       ])
     );
+    const explanationTraces = snapshot.explanationTraces as Array<Record<string, unknown>>;
+    const basicReturnTrace = explanationTraces.find((trace) => trace.key === "basicReturn");
+    const cvdTrace = explanationTraces.find((trace) => trace.key === "cvd");
+    const profitTakingPressureTrace = explanationTraces.find(
+      (trace) => trace.key === "profitTakingPressure"
+    );
+
+    expect(basicReturnTrace).toMatchObject({
+      key: "basicReturn",
+      originalFormula: expect.arrayContaining(["단순 수익률 = 현재가 / 기준가 - 1"]),
+      substitutedFormula: expect.arrayContaining(["단순 수익률 = 103.50 / 103.50 - 1"]),
+      result: expect.arrayContaining(["단순 수익률 = 0.00%"])
+    });
+    expect(cvdTrace).toMatchObject({
+      key: "cvd",
+      limitation: "Toss 체결 데이터에 aggressor side가 없어 tick-rule로 추정합니다."
+    });
+    expect(profitTakingPressureTrace).toMatchObject({
+      key: "profitTakingPressure",
+      title: "차익실현 압박 추정",
+      originalFormula: expect.arrayContaining([
+        "차익실현 압박 점수 = 100 × 가중합(수익권 물량, VWAP/ATR 이격, 매도 체결 압력, 매도호가 압력, 거래량 확장)"
+      ]),
+      result: expect.arrayContaining(["차익실현 압박 점수 = 59점"]),
+      limitation: "표준 공식명이 아니라 앱 내부 추정 지표이며 실제 보유자 원가나 매도 의도를 알 수 없습니다."
+    });
   });
 
   it("reports unavailable calculations when required market observations are missing", () => {
@@ -120,6 +171,10 @@ describe("createQuantIndicatorSnapshot", () => {
       decisionStatus: "dataInsufficient",
       decisionLabel: "데이터 부족",
       indicators: {
+        basicReturn: {
+          status: "unavailable",
+          unavailableReason: "current price and previous close are required"
+        },
         vwap: {
           status: "unavailable",
           unavailableReason: "intraday candles are required"
@@ -135,6 +190,195 @@ describe("createQuantIndicatorSnapshot", () => {
         atrStop: {
           status: "unavailable",
           unavailableReason: "at least 15 daily candles are required"
+        },
+        velocityAcceleration: {
+          status: "unavailable",
+          unavailableReason: "at least three intraday candles are required"
+        },
+        distanceProfile: {
+          status: "unavailable",
+          unavailableReason: "VWAP, ATR, and at least 20 intraday candles are required"
+        },
+        rsiMomentum: {
+          status: "unavailable",
+          unavailableReason: "at least 15 intraday candles are required"
+        },
+        profitTakingPressure: {
+          status: "unavailable",
+          unavailableReason: "current price, intraday candles, VWAP, and ATR are required"
+        },
+        marketSentimentScore: {
+          status: "unavailable",
+          unavailableReason: "deterministic indicator components are required"
+        },
+        intradayTradeScore: {
+          status: "unavailable",
+          unavailableReason: "market sentiment score is required"
+        }
+      }
+    });
+  });
+
+  it("calculates LLM-free velocity, distance, RSI, sentiment score, and trade score", () => {
+    const snapshot = createQuantIndicatorSnapshot({
+      marketDataSnapshot: createExpandedDeterministicMarketDataSnapshot(),
+      calculatedAt: "2026-07-06T09:50:00.000Z"
+    });
+
+    expect(snapshot).toMatchObject({
+      quality: "complete",
+      indicators: {
+        velocityAcceleration: {
+          status: "available",
+          latestLogReturnPercent: 0.84,
+          priceAccelerationPercent: -0.01,
+          volumeChangePercent: 0,
+          estimatedCvdChange: "5",
+          label: "상승 속도 둔화",
+          severity: "warning"
+        },
+        distanceProfile: {
+          status: "available",
+          vwapDistanceBps: 868,
+          movingAverageDistanceBps: 868,
+          atrMultipleFromPreviousClose: 0,
+          label: "상방 이격 과열",
+          severity: "warning"
+        },
+        rsiMomentum: {
+          status: "available",
+          rsi: 100,
+          momentumPercent: 4.29,
+          label: "RSI 과열",
+          severity: "warning"
+        },
+        profitTakingPressure: {
+          status: "available",
+          profitLongRatio: 0.95,
+          score: 59,
+          label: "차익실현 압박 경계",
+          severity: "warning"
+        },
+        marketSentimentScore: {
+          status: "available",
+          score: 82,
+          label: "정량 심리 우호",
+          severity: "positive"
+        },
+        intradayTradeScore: {
+          status: "available",
+          conditionStrengthPercent: 96.08,
+          label: "조건 충족 강함",
+          severity: "positive"
+        }
+      }
+    });
+
+    const explanationTraces = snapshot.explanationTraces as Array<Record<string, unknown>>;
+
+    expect(explanationTraces.map((trace) => trace.key)).toEqual(
+      expect.arrayContaining([
+        "velocityAcceleration",
+        "distanceProfile",
+        "rsiMomentum",
+        "profitTakingPressure",
+        "marketSentimentScore",
+        "intradayTradeScore"
+      ])
+    );
+    expect(explanationTraces.find((trace) => trace.key === "intradayTradeScore")).toMatchObject({
+      originalFormula: expect.arrayContaining(["조건 충족 강도 = sigmoid((정량 심리 점수 - 50) / 10) × 100"]),
+      result: expect.arrayContaining(["조건 충족 강도 = 96.08%"])
+    });
+  });
+
+  it("caps composite score when a danger indicator would otherwise be averaged away", () => {
+    const snapshot = createQuantIndicatorSnapshot({
+      marketDataSnapshot: createStrongProfitTakingPressureSnapshot(),
+      calculatedAt: "2026-07-06T09:50:00.000Z"
+    });
+
+    expect(snapshot).toMatchObject({
+      indicators: {
+        profitTakingPressure: {
+          status: "available",
+          score: 92,
+          label: "차익실현 압박 강함",
+          severity: "danger"
+        },
+        marketSentimentScore: {
+          status: "available",
+          score: 64,
+          label: "정량 심리 중립",
+          severity: "neutral"
+        }
+      }
+    });
+  });
+
+  it("keeps overhead supply separate from profit taking pressure", () => {
+    const snapshot = createQuantIndicatorSnapshot({
+      marketDataSnapshot: createOverheadSupplyWithoutProfitTakingSnapshot(),
+      calculatedAt: "2026-07-06T09:35:00.000Z"
+    });
+
+    expect(snapshot).toMatchObject({
+      indicators: {
+        supplyPressure: {
+          status: "available",
+          overheadRatio: 0.75,
+          label: "상단 매물대 근접",
+          severity: "danger"
+        },
+        profitTakingPressure: {
+          status: "available",
+          profitLongRatio: 0.25,
+          score: 14,
+          label: "차익실현 압박 낮음",
+          severity: "positive"
+        }
+      }
+    });
+  });
+
+  it("uses a simple profit-taking pressure formula when trade flow and orderbook are unavailable", () => {
+    const snapshot = createQuantIndicatorSnapshot({
+      marketDataSnapshot: createProfitTakingPressureWithoutFlowSnapshot(),
+      calculatedAt: "2026-07-06T09:35:00.000Z"
+    });
+
+    expect(snapshot).toMatchObject({
+      indicators: {
+        profitTakingPressure: {
+          status: "available",
+          profitLongRatio: 1,
+          vwapAtrExtension: 1,
+          sellFlowPressure: 0,
+          askBookPressure: 0,
+          score: 100,
+          label: "차익실현 압박 강함",
+          severity: "danger"
+        }
+      }
+    });
+  });
+
+  it("uses the previous daily close when the daily candle contains the current trading date", () => {
+    const snapshot = createQuantIndicatorSnapshot({
+      marketDataSnapshot: createMarketDataSnapshotWithCurrentSessionDailyCandle(),
+      calculatedAt: "2026-07-06T09:35:00.000Z"
+    });
+
+    expect(snapshot).toMatchObject({
+      indicators: {
+        basicReturn: {
+          status: "available",
+          currentPrice: "103.5000",
+          referencePrice: "100.0000",
+          absoluteChange: "3.5000",
+          simpleReturnPercent: 3.5,
+          logReturnPercent: 3.44,
+          referenceLabel: "전일 종가"
         }
       }
     });
@@ -169,7 +413,7 @@ describe("StoredQuantIndicatorSnapshotRepository", () => {
       expect.objectContaining({
         cardId: "card-1",
         symbol: "MU",
-        decisionStatus: "watch",
+        decisionStatus: "confirmationWaiting",
         sourceMarketDataSnapshotId: "market-1"
       })
     ]);
@@ -253,6 +497,185 @@ function createInvalidatedMarketDataSnapshot(): Record<string, unknown> {
         { price: "100.50", volume: "15", timestamp: "2026-07-06T09:32:00.000Z", currency: "USD" },
         { price: "99.00", volume: "30", timestamp: "2026-07-06T09:33:00.000Z", currency: "USD" }
       ]
+    }
+  };
+}
+
+function createMarketDataSnapshotWithCurrentSessionDailyCandle(): Record<string, unknown> {
+  const snapshot = createCompleteMarketDataSnapshot();
+
+  return {
+    ...snapshot,
+    observations: {
+      ...(snapshot.observations as Record<string, unknown>),
+      dailyCandles: {
+        interval: "1d",
+        nextBefore: null,
+        candles: [
+          createCandle("2026-07-01T00:00:00.000Z", "98", "99", "97", "98.50", "10000"),
+          createCandle("2026-07-02T00:00:00.000Z", "99", "100", "98", "99.50", "10000"),
+          createCandle("2026-07-03T00:00:00.000Z", "100", "101", "99", "100.00", "10000"),
+          createCandle("2026-07-06T00:00:00.000Z", "101", "104", "100", "103.50", "10000")
+        ]
+      }
+    }
+  };
+}
+
+function createOverheadSupplyWithoutProfitTakingSnapshot(): Record<string, unknown> {
+  const snapshot = createCompleteMarketDataSnapshot();
+
+  return {
+    ...snapshot,
+    observations: {
+      ...(snapshot.observations as Record<string, unknown>),
+      price: {
+        symbol: "MU",
+        timestamp: "2026-07-06T09:34:00.000Z",
+        lastPrice: "100.00",
+        currency: "USD"
+      },
+      trades: [
+        { price: "100.00", volume: "10", timestamp: "2026-07-06T09:30:00.000Z", currency: "USD" },
+        { price: "99.50", volume: "20", timestamp: "2026-07-06T09:31:00.000Z", currency: "USD" },
+        { price: "99.00", volume: "15", timestamp: "2026-07-06T09:32:00.000Z", currency: "USD" },
+        { price: "99.50", volume: "30", timestamp: "2026-07-06T09:33:00.000Z", currency: "USD" }
+      ],
+      orderbook: {
+        timestamp: "2026-07-06T09:34:00.000Z",
+        currency: "USD",
+        asks: [{ price: "100.10", volume: "40" }],
+        bids: [{ price: "99.90", volume: "160" }]
+      },
+      intradayCandles: {
+        interval: "1m",
+        nextBefore: null,
+        candles: [
+          createCandle("2026-07-06T09:30:00.000Z", "99", "100", "98", "99", "1000"),
+          createCandle("2026-07-06T09:31:00.000Z", "101", "102", "100", "101", "1000"),
+          createCandle("2026-07-06T09:32:00.000Z", "102", "103", "101", "102", "1000"),
+          createCandle("2026-07-06T09:33:00.000Z", "103", "104", "102", "103", "1000")
+        ]
+      },
+      dailyCandles: {
+        interval: "1d",
+        nextBefore: null,
+        candles: createDailyCandles("100.00")
+      }
+    }
+  };
+}
+
+function createStrongProfitTakingPressureSnapshot(): Record<string, unknown> {
+  const snapshot = createCompleteMarketDataSnapshot();
+
+  return {
+    ...snapshot,
+    observations: {
+      ...(snapshot.observations as Record<string, unknown>),
+      price: {
+        symbol: "MU",
+        timestamp: "2026-07-06T09:49:00.000Z",
+        lastPrice: "120.00",
+        currency: "USD"
+      },
+      trades: [
+        { price: "120.00", volume: "10", timestamp: "2026-07-06T09:45:00.000Z", currency: "USD" },
+        { price: "119.00", volume: "30", timestamp: "2026-07-06T09:46:00.000Z", currency: "USD" },
+        { price: "118.00", volume: "30", timestamp: "2026-07-06T09:47:00.000Z", currency: "USD" },
+        { price: "117.50", volume: "30", timestamp: "2026-07-06T09:48:00.000Z", currency: "USD" }
+      ],
+      orderbook: {
+        timestamp: "2026-07-06T09:49:00.000Z",
+        currency: "USD",
+        asks: [{ price: "120.10", volume: "220" }],
+        bids: [{ price: "119.90", volume: "20" }]
+      },
+      intradayCandles: {
+        interval: "1m",
+        nextBefore: null,
+        candles: Array.from({ length: 20 }, (_value, index) => {
+          const close = 100 + index;
+
+          return createCandle(
+            `2026-07-06T09:${String(30 + index).padStart(2, "0")}:00.000Z`,
+            close.toFixed(2),
+            (close + 1).toFixed(2),
+            (close - 1).toFixed(2),
+            close.toFixed(2),
+            "1000"
+          );
+        })
+      },
+      dailyCandles: {
+        interval: "1d",
+        nextBefore: null,
+        candles: createDailyCandles("120.00")
+      }
+    }
+  };
+}
+
+function createProfitTakingPressureWithoutFlowSnapshot(): Record<string, unknown> {
+  const snapshot = createCompleteMarketDataSnapshot();
+
+  return {
+    ...snapshot,
+    observations: {
+      ...(snapshot.observations as Record<string, unknown>),
+      trades: [],
+      orderbook: null
+    }
+  };
+}
+
+function createExpandedDeterministicMarketDataSnapshot(): Record<string, unknown> {
+  const snapshot = createCompleteMarketDataSnapshot();
+
+  return {
+    ...snapshot,
+    capturedAt: "2026-07-06T09:50:00.000Z",
+    observations: {
+      ...(snapshot.observations as Record<string, unknown>),
+      price: {
+        symbol: "MU",
+        timestamp: "2026-07-06T09:49:00.000Z",
+        lastPrice: "119.00",
+        currency: "USD"
+      },
+      trades: [
+        { price: "116.00", volume: "10", timestamp: "2026-07-06T09:45:00.000Z", currency: "USD" },
+        { price: "117.00", volume: "20", timestamp: "2026-07-06T09:46:00.000Z", currency: "USD" },
+        { price: "116.50", volume: "5", timestamp: "2026-07-06T09:47:00.000Z", currency: "USD" },
+        { price: "118.00", volume: "30", timestamp: "2026-07-06T09:48:00.000Z", currency: "USD" }
+      ],
+      orderbook: {
+        timestamp: "2026-07-06T09:49:00.000Z",
+        currency: "USD",
+        asks: [{ price: "119.10", volume: "100" }],
+        bids: [{ price: "118.90", volume: "120" }]
+      },
+      intradayCandles: {
+        interval: "1m",
+        nextBefore: null,
+        candles: Array.from({ length: 20 }, (_value, index) => {
+          const close = 100 + index;
+
+          return createCandle(
+            `2026-07-06T09:${String(30 + index).padStart(2, "0")}:00.000Z`,
+            close.toFixed(2),
+            (close + 1).toFixed(2),
+            (close - 1).toFixed(2),
+            close.toFixed(2),
+            "1000"
+          );
+        })
+      },
+      dailyCandles: {
+        interval: "1d",
+        nextBefore: null,
+        candles: createDailyCandles("119.00")
+      }
     }
   };
 }

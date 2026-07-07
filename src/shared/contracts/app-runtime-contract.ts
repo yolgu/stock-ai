@@ -416,12 +416,19 @@ export type QuantIndicatorDecisionStatus =
 export type QuantIndicatorSeverity = "positive" | "neutral" | "warning" | "danger" | "unavailable";
 export type QuantIndicatorCalculationStatus = "available" | "estimated" | "unavailable";
 export type QuantIndicatorSignalKey =
+  | "basicReturn"
   | "vwap"
   | "cvd"
   | "spread"
+  | "velocityAcceleration"
+  | "distanceProfile"
+  | "rsiMomentum"
   | "atrStop"
   | "supplyPressure"
-  | "riskReward";
+  | "profitTakingPressure"
+  | "riskReward"
+  | "marketSentimentScore"
+  | "intradayTradeScore";
 
 export interface QuantIndicatorSignalPayload {
   key: QuantIndicatorSignalKey;
@@ -429,6 +436,20 @@ export interface QuantIndicatorSignalPayload {
   severity: QuantIndicatorSeverity;
   status: QuantIndicatorCalculationStatus;
   reason: string | null;
+}
+
+export interface BasicReturnIndicatorPayload {
+  status: "available" | "unavailable";
+  currentPrice: string | null;
+  referencePrice: string | null;
+  absoluteChange: string | null;
+  simpleReturnPercent: number | null;
+  logReturnPercent: number | null;
+  currency: string;
+  referenceLabel: string;
+  label: string;
+  severity: QuantIndicatorSeverity;
+  unavailableReason: string | null;
 }
 
 export interface VwapIndicatorPayload {
@@ -475,6 +496,20 @@ export interface SupplyPressureIndicatorPayload {
   unavailableReason: string | null;
 }
 
+export interface ProfitTakingPressureIndicatorPayload {
+  status: "available" | "unavailable";
+  profitLongRatio: number | null;
+  weightedProfitPressure: number | null;
+  vwapAtrExtension: number | null;
+  sellFlowPressure: number | null;
+  askBookPressure: number | null;
+  volumeExpansion: number | null;
+  score: number | null;
+  label: string;
+  severity: QuantIndicatorSeverity;
+  unavailableReason: string | null;
+}
+
 export interface RiskRewardIndicatorPayload {
   status: "available" | "unavailable";
   ratio: number | null;
@@ -483,13 +518,86 @@ export interface RiskRewardIndicatorPayload {
   unavailableReason: string | null;
 }
 
+export interface VelocityAccelerationIndicatorPayload {
+  status: "available" | "unavailable";
+  latestLogReturnPercent: number | null;
+  priceAccelerationPercent: number | null;
+  volumeChangePercent: number | null;
+  estimatedCvdChange: string | null;
+  label: string;
+  severity: QuantIndicatorSeverity;
+  unavailableReason: string | null;
+}
+
+export interface DistanceProfileIndicatorPayload {
+  status: "available" | "unavailable";
+  vwapDistanceBps: number | null;
+  movingAverageDistanceBps: number | null;
+  atrMultipleFromPreviousClose: number | null;
+  label: string;
+  severity: QuantIndicatorSeverity;
+  unavailableReason: string | null;
+}
+
+export interface RsiMomentumIndicatorPayload {
+  status: "available" | "unavailable";
+  rsi: number | null;
+  momentumPercent: number | null;
+  label: string;
+  severity: QuantIndicatorSeverity;
+  unavailableReason: string | null;
+}
+
+export interface MarketSentimentScoreIndicatorPayload {
+  status: "available" | "unavailable";
+  score: number | null;
+  label: string;
+  severity: QuantIndicatorSeverity;
+  unavailableReason: string | null;
+}
+
+export interface IntradayTradeScoreIndicatorPayload {
+  status: "available" | "unavailable";
+  conditionStrengthPercent: number | null;
+  label: string;
+  severity: QuantIndicatorSeverity;
+  unavailableReason: string | null;
+}
+
 export interface QuantIndicatorsPayload {
+  basicReturn: BasicReturnIndicatorPayload;
   vwap: VwapIndicatorPayload;
   cvd: CvdIndicatorPayload;
   spread: SpreadIndicatorPayload;
+  velocityAcceleration: VelocityAccelerationIndicatorPayload;
+  distanceProfile: DistanceProfileIndicatorPayload;
+  rsiMomentum: RsiMomentumIndicatorPayload;
   atrStop: AtrStopIndicatorPayload;
   supplyPressure: SupplyPressureIndicatorPayload;
+  profitTakingPressure: ProfitTakingPressureIndicatorPayload;
   riskReward: RiskRewardIndicatorPayload;
+  marketSentimentScore: MarketSentimentScoreIndicatorPayload;
+  intradayTradeScore: IntradayTradeScoreIndicatorPayload;
+}
+
+export interface QuantIndicatorExplanationInputPayload {
+  label: string;
+  value: string;
+}
+
+export interface QuantIndicatorExplanationTracePayload {
+  key: QuantIndicatorSignalKey;
+  title: string;
+  source: string;
+  originalFormula: string[];
+  substitutedFormula: string[];
+  result: string[];
+  inputs: QuantIndicatorExplanationInputPayload[];
+  meaning: string;
+  usage: string;
+  judgment: string;
+  caution: string;
+  limitation: string | null;
 }
 
 export interface QuantIndicatorSnapshotPayload {
@@ -505,6 +613,7 @@ export interface QuantIndicatorSnapshotPayload {
   nextCheckLabel: string;
   indicators: QuantIndicatorsPayload;
   signals: QuantIndicatorSignalPayload[];
+  explanationTraces: QuantIndicatorExplanationTracePayload[];
 }
 
 export interface RefreshQuantIndicatorsForWatchlistPayload {

@@ -1,4 +1,4 @@
-# Step 08 PRD: Manual LLM Insight Engine With Codex OAuth Proxy
+# Step 12 PRD: Manual LLM Insight Engine With Codex OAuth Proxy
 
 ## Goal
 
@@ -96,5 +96,4 @@ The adapter follows the `adp` pattern:
 ## Dependencies
 
 - Step 05 quant indicator engine.
-- Step 07 news/event timeline.
-
+- Step 11 news/event timeline.

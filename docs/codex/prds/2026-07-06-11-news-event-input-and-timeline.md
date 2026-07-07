@@ -1,4 +1,4 @@
-# Step 07 PRD: News/Event Input And Timeline
+# Step 11 PRD: News/Event Input And Timeline
 
 ## Goal
 
@@ -63,7 +63,7 @@ The user can attach market context to a stock card without confusing raw news wi
 - Duplicate event inputs are merged or rejected with a clear reason.
 - Event timeline is ordered by event time, not import time.
 - Each event records whether it is external input or user-provided.
-- Events are available as structured input to Step 08 LLM insight snapshots.
+- Events are available as structured input to Step 12 LLM insight snapshots.
 
 ## Verification
 
@@ -74,4 +74,3 @@ The user can attach market context to a stock card without confusing raw news wi
 ## Dependencies
 
 - Step 02 watch card CRUD.
-

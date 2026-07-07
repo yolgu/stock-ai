@@ -15,10 +15,14 @@ The product is a Neutralino + React + TypeScript desktop app for day-trading sup
 | 04 | [Market Data Polling And Cache](./2026-07-06-04-market-data-polling-and-cache.md) |
 | 05 | [Quant Indicator Engine And Card Status](./2026-07-06-05-quant-indicator-engine-and-card-status.md) |
 | 06 | [Watchlist Dashboard And Detail UI](./2026-07-06-06-watchlist-dashboard-and-detail-ui.md) |
-| 07 | [News/Event Input And Timeline](./2026-07-06-07-news-event-input-and-timeline.md) |
-| 08 | [Manual LLM Insight Engine With Codex OAuth Proxy](./2026-07-06-08-manual-llm-insight-engine-with-codex-oauth-proxy.md) |
-| 09 | [Backtesting Engine And Strategy Report](./2026-07-06-09-backtesting-engine-and-strategy-report.md) |
-| 10 | [Order Integration And User Confirmation Guardrails](./2026-07-06-10-order-integration-and-user-confirmation-guardrails.md) |
+| 07 | [Market Context And Basic Returns](./2026-07-06-07-market-context-and-basic-returns.md) |
+| 08 | [Indicator Explanation Model](./2026-07-06-08-indicator-explanation-model.md) |
+| 09 | [Beginner Explanation Popover UI](./2026-07-06-09-beginner-explanation-popover-ui.md) |
+| 10 | [LLM-Free Deterministic Indicator Expansion](./2026-07-06-10-llm-free-deterministic-indicator-expansion.md) |
+| 11 | [News/Event Input And Timeline](./2026-07-06-11-news-event-input-and-timeline.md) |
+| 12 | [Manual LLM Insight Engine With Codex OAuth Proxy](./2026-07-06-12-manual-llm-insight-engine-with-codex-oauth-proxy.md) |
+| 13 | [Backtesting Engine And Strategy Report](./2026-07-06-13-backtesting-engine-and-strategy-report.md) |
+| 14 | [Order Integration And User Confirmation Guardrails](./2026-07-06-14-order-integration-and-user-confirmation-guardrails.md) |
 
 ## Core Architecture Decision
 
@@ -28,4 +32,3 @@ Deterministic calculations and LLM insight are separate.
 - Manual AI refresh creates an immutable `InsightSnapshot`.
 - LLM reports are attached to the snapshot that produced them.
 - Order submission remains behind user-authored drafts and explicit confirmation.
-

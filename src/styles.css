@@ -168,6 +168,17 @@ h2 {
   padding: 0 14px;
 }
 
+.secondary-button--compact {
+  min-height: 36px;
+  padding: 0 12px;
+  font-size: 0.78rem;
+}
+
+button:focus-visible {
+  outline: 2px solid rgba(52, 133, 255, 0.72);
+  outline-offset: 2px;
+}
+
 .empty-watchlist-panel {
   min-height: 280px;
   display: grid;
@@ -189,6 +200,37 @@ h2 {
   border: 1px solid var(--color-border);
   border-radius: 8px;
   background: rgba(11, 18, 28, 0.42);
+}
+
+.dashboard-controls {
+  display: grid;
+  gap: 10px;
+}
+
+.segmented-control {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  padding-bottom: 2px;
+}
+
+.segment-button {
+  min-height: 36px;
+  flex: 0 0 auto;
+  padding: 0 12px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: rgba(28, 39, 54, 0.54);
+  color: #cbd5e3;
+  font: inherit;
+  font-size: 0.82rem;
+  font-weight: 800;
+}
+
+.segment-button.is-active {
+  border-color: rgba(52, 133, 255, 0.55);
+  background: rgba(52, 133, 255, 0.15);
+  color: #8dbbff;
 }
 
 .inline-form,
@@ -261,6 +303,13 @@ select:focus {
   gap: 12px;
 }
 
+.watch-dashboard-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(340px, 420px);
+  gap: 12px;
+  align-items: start;
+}
+
 .watch-card {
   min-height: 190px;
   display: grid;
@@ -301,6 +350,51 @@ select:focus {
 
 .watch-card__memo {
   line-height: 1.45;
+}
+
+.market-context-strip {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid rgba(124, 150, 180, 0.18);
+  border-radius: 8px;
+  background: rgba(6, 13, 22, 0.28);
+  color: #cbd5e3;
+}
+
+.market-context-strip--compact {
+  padding: 8px 10px;
+}
+
+.market-context-strip strong {
+  color: var(--color-text);
+  font-size: 1rem;
+}
+
+.market-context-strip span {
+  font-size: 0.82rem;
+  font-weight: 800;
+}
+
+.market-context-strip small,
+.market-context-strip__empty {
+  color: var(--color-muted);
+  font-size: 0.76rem;
+  font-weight: 700;
+}
+
+.market-context-strip--positive span {
+  color: var(--color-red);
+}
+
+.market-context-strip--danger span {
+  color: var(--color-blue);
+}
+
+.market-context-strip--neutral span {
+  color: #cbd5e3;
 }
 
 .quant-card-state {
@@ -438,6 +532,255 @@ select:focus {
 .watch-card__actions {
   align-self: end;
   gap: 8px;
+  flex-wrap: wrap;
+}
+
+.detail-panel {
+  position: sticky;
+  top: 18px;
+  max-height: calc(100vh - 72px);
+  overflow: auto;
+  display: grid;
+  gap: 14px;
+  padding: 16px;
+  border: 1px solid var(--color-border-strong);
+  border-radius: 8px;
+  background:
+    linear-gradient(180deg, rgba(20, 31, 45, 0.96), rgba(9, 15, 24, 0.96)),
+    var(--color-surface);
+}
+
+.detail-panel__header,
+.detail-section__title-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.detail-section,
+.detail-edit-form {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid rgba(124, 150, 180, 0.18);
+  border-radius: 8px;
+  background: rgba(6, 13, 22, 0.28);
+}
+
+.detail-section h3 {
+  margin: 0;
+  font-size: 0.98rem;
+}
+
+.quant-checklist,
+.conditional-zone-grid {
+  display: grid;
+  gap: 8px;
+}
+
+.checklist-row {
+  position: relative;
+  display: grid;
+  grid-template-columns: 12px minmax(86px, auto) minmax(0, 1fr);
+  gap: 8px;
+  align-items: center;
+  padding: 9px;
+  border: 1px solid rgba(124, 150, 180, 0.14);
+  border-radius: 8px;
+  background: rgba(11, 18, 28, 0.42);
+  color: #cbd5e3;
+  font-size: 0.82rem;
+}
+
+.checklist-row__status {
+  display: inline-flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.icon-button--inline {
+  width: 24px;
+  height: 24px;
+  min-height: 24px;
+}
+
+.checklist-help {
+  flex: 0 0 auto;
+  position: relative;
+  display: inline-grid;
+  place-items: center;
+}
+
+.indicator-explanation-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+}
+
+.indicator-explanation-backdrop {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  min-height: 100%;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: rgba(2, 6, 12, 0.32);
+  cursor: default;
+}
+
+.indicator-explanation-popover {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  z-index: 91;
+  width: min(560px, calc(100vw - 48px));
+  max-height: min(680px, calc(100vh - 72px));
+  transform: translate(-50%, -50%);
+  overflow: auto;
+  display: grid;
+  gap: 8px;
+  padding: 14px;
+  border: 1px solid rgba(135, 164, 199, 0.42);
+  border-radius: 8px;
+  background:
+    linear-gradient(180deg, rgba(20, 31, 45, 0.98), rgba(8, 14, 23, 0.98)),
+    var(--color-surface);
+  box-shadow: 0 24px 72px rgba(0, 0, 0, 0.58);
+}
+
+.indicator-explanation-popover--centered {
+  right: auto;
+}
+
+.indicator-explanation-popover__header {
+  display: grid;
+  gap: 3px;
+  padding-bottom: 4px;
+  border-bottom: 1px solid rgba(124, 150, 180, 0.16);
+}
+
+.indicator-explanation-popover__header strong {
+  color: var(--color-text);
+  font-size: 0.95rem;
+}
+
+.checklist-row p {
+  grid-column: 2 / -1;
+  color: var(--color-muted);
+  line-height: 1.4;
+}
+
+.checklist-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--color-muted);
+}
+
+.checklist-dot--positive {
+  background: var(--color-green);
+}
+
+.checklist-dot--warning {
+  background: var(--color-amber);
+}
+
+.checklist-dot--danger {
+  background: var(--color-red);
+}
+
+.checklist-dot--neutral,
+.checklist-dot--unavailable {
+  background: var(--color-faint);
+}
+
+.conditional-zone {
+  display: grid;
+  gap: 5px;
+  padding: 10px;
+  border: 1px solid rgba(124, 150, 180, 0.18);
+  border-radius: 8px;
+  color: #cbd5e3;
+  background: rgba(11, 18, 28, 0.42);
+}
+
+.conditional-zone p {
+  color: var(--color-muted);
+  line-height: 1.42;
+}
+
+.conditional-zone--blue.is-active {
+  border-color: rgba(52, 133, 255, 0.5);
+  background: rgba(52, 133, 255, 0.12);
+}
+
+.conditional-zone--green.is-active {
+  border-color: rgba(45, 201, 121, 0.48);
+  background: rgba(45, 201, 121, 0.12);
+}
+
+.conditional-zone--red.is-active {
+  border-color: rgba(255, 77, 97, 0.5);
+  background: rgba(255, 77, 97, 0.12);
+}
+
+.data-quality-badge {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.data-quality-badge span {
+  padding: 5px 9px;
+  border: 1px solid rgba(124, 150, 180, 0.22);
+  border-radius: 999px;
+  color: #cbd5e3;
+  font-size: 0.78rem;
+  font-weight: 800;
+}
+
+.explanation-block {
+  display: grid;
+  gap: 5px;
+  padding: 9px;
+  border: 1px solid rgba(124, 150, 180, 0.12);
+  border-radius: 8px;
+  background: rgba(11, 18, 28, 0.32);
+}
+
+.explanation-block strong {
+  color: #8dbbff;
+  font-size: 0.78rem;
+}
+
+.explanation-block p {
+  color: #cbd5e3;
+  line-height: 1.45;
+}
+
+.data-quality-badge--ready span {
+  border-color: rgba(45, 201, 121, 0.42);
+  color: #70e0a4;
+}
+
+.data-quality-badge--warning span {
+  border-color: rgba(245, 171, 53, 0.44);
+  color: #ffc16f;
+}
+
+.data-quality-badge--danger span {
+  border-color: rgba(255, 82, 98, 0.46);
+  color: #ff7a89;
+}
+
+.detail-edit-form {
+  grid-template-columns: 1fr;
 }
 
 .secondary-card-list {
@@ -497,6 +840,10 @@ select:focus {
     linear-gradient(180deg, rgba(22, 33, 47, 0.96), rgba(10, 16, 25, 0.96)),
     var(--color-surface);
   box-shadow: var(--shadow-shell);
+}
+
+.add-symbol-dialog {
+  width: min(100%, 760px);
 }
 
 .credential-status {
@@ -650,8 +997,14 @@ select:focus {
 
   .inline-form,
   .symbol-intake-form,
-  .watch-card-grid {
+  .watch-card-grid,
+  .watch-dashboard-layout {
     grid-template-columns: 1fr;
+  }
+
+  .detail-panel {
+    position: static;
+    max-height: none;
   }
 
   .inline-form__wide,
