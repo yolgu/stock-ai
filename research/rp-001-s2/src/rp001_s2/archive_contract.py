@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import unicodedata
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from enum import Enum
@@ -66,7 +67,14 @@ BENCHMARK_SYMBOLS: tuple[str, ...] = (
 _INSTRUMENT_MASTER_SCHEMA_VERSION: str = (
     "rp001-s2-direction-neutral-instrument-master.v1"
 )
+_ACQUISITION_IDENTITY_SCHEMA_VERSION: str = (
+    "rp001-s2-direction-neutral-acquisition-identity.v1"
+)
+_ACQUISITION_IDENTITY_DOMAIN: str = (
+    "rp001_s2.direction_neutral_archive_acquisition"
+)
 _ALLOWED_INTERVALS: frozenset[str] = frozenset({"1m", "1d"})
+_FORBIDDEN_IDENTIFIER_CATEGORIES: frozenset[str] = frozenset({"Cc", "Cf"})
 
 
 class InstrumentRole(str, Enum):
@@ -125,7 +133,7 @@ class CollectionScope:
             self.adjustment_mode,
             self.session_scope,
         )
-        if any(type(value) is not str or not value.strip() for value in identifiers):
+        if any(not _is_canonical_identifier(value) for value in identifiers):
             raise ValueError("collection_scope_identifier_invalid")
         if type(self.interval) is not str or self.interval not in _ALLOWED_INTERVALS:
             raise ValueError("collection_scope_interval_invalid")
@@ -138,6 +146,8 @@ class CollectionScope:
 
     def acquisition_identity_body(self) -> dict[str, str]:
         return {
+            "schemaVersion": _ACQUISITION_IDENTITY_SCHEMA_VERSION,
+            "identityDomain": _ACQUISITION_IDENTITY_DOMAIN,
             "provider": self.provider,
             "feed": self.feed,
             "instrumentId": self.instrument_id,
@@ -199,12 +209,29 @@ class InstrumentMasterEntry:
     symbol: str
     role: InstrumentRole
 
+    def __post_init__(self) -> None:
+        if any(
+            not _is_canonical_identifier(value)
+            for value in (self.instrument_id, self.symbol)
+        ):
+            raise ValueError("instrument_master_identifier_invalid")
+        if not isinstance(self.role, InstrumentRole):
+            raise ValueError("instrument_role_invalid")
+
 
 @dataclass(frozen=True)
 class InstrumentMaster:
     entries: tuple[InstrumentMasterEntry, ...]
 
     def __post_init__(self) -> None:
+        if (
+            type(self.entries) is not tuple
+            or not self.entries
+            or any(
+                not isinstance(entry, InstrumentMasterEntry) for entry in self.entries
+            )
+        ):
+            raise ValueError("instrument_master_entries_invalid")
         instrument_ids = tuple(entry.instrument_id for entry in self.entries)
         symbols = tuple(entry.symbol for entry in self.entries)
         if len(set(instrument_ids)) != len(instrument_ids):
@@ -275,3 +302,16 @@ def _is_utc_aware(value: object) -> bool:
 
 def _format_utc(value: datetime) -> str:
     return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _is_canonical_identifier(value: object) -> bool:
+    return (
+        type(value) is str
+        and bool(value)
+        and value == value.strip()
+        and unicodedata.normalize("NFC", value) == value
+        and not any(
+            unicodedata.category(character) in _FORBIDDEN_IDENTIFIER_CATEGORIES
+            for character in value
+        )
+    )

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import unittest
 from dataclasses import fields
 from datetime import datetime, timedelta, timezone
@@ -73,6 +72,87 @@ _EXPECTED_BENCHMARK_SYMBOLS: tuple[str, ...] = (
     "XLY",
     "SOXX",
 )
+_INVALID_IDENTIFIER_VALUES: tuple[object, ...] = (
+    "",
+    "   ",
+    " AAPL",
+    "AAPL ",
+    "AAPL\r",
+    "AAPL\n",
+    "AAPL\x00",
+    "A\u200bAPL",
+    "A\u0301",
+    None,
+    1,
+)
+_EXPECTED_INSTRUMENT_MASTER_CANONICAL_BYTES: bytes = (
+    b'{"instruments":['
+    b'{"instrumentId":"000660","role":"priority","symbol":"000660"},'
+    b'{"instrumentId":"AAPL","role":"priority","symbol":"AAPL"},'
+    b'{"instrumentId":"AMD","role":"priority","symbol":"AMD"},'
+    b'{"instrumentId":"AMZN","role":"priority","symbol":"AMZN"},'
+    b'{"instrumentId":"AVGO","role":"priority","symbol":"AVGO"},'
+    b'{"instrumentId":"BA","role":"priority","symbol":"BA"},'
+    b'{"instrumentId":"CAT","role":"priority","symbol":"CAT"},'
+    b'{"instrumentId":"COST","role":"priority","symbol":"COST"},'
+    b'{"instrumentId":"CVX","role":"priority","symbol":"CVX"},'
+    b'{"instrumentId":"DIS","role":"priority","symbol":"DIS"},'
+    b'{"instrumentId":"GE","role":"priority","symbol":"GE"},'
+    b'{"instrumentId":"GS","role":"priority","symbol":"GS"},'
+    b'{"instrumentId":"HD","role":"priority","symbol":"HD"},'
+    b'{"instrumentId":"IBM","role":"priority","symbol":"IBM"},'
+    b'{"instrumentId":"JNJ","role":"priority","symbol":"JNJ"},'
+    b'{"instrumentId":"JPM","role":"priority","symbol":"JPM"},'
+    b'{"instrumentId":"KO","role":"priority","symbol":"KO"},'
+    b'{"instrumentId":"LOW","role":"priority","symbol":"LOW"},'
+    b'{"instrumentId":"MCD","role":"priority","symbol":"MCD"},'
+    b'{"instrumentId":"META","role":"priority","symbol":"META"},'
+    b'{"instrumentId":"MRK","role":"priority","symbol":"MRK"},'
+    b'{"instrumentId":"MSFT","role":"priority","symbol":"MSFT"},'
+    b'{"instrumentId":"MU","role":"priority","symbol":"MU"},'
+    b'{"instrumentId":"NFLX","role":"priority","symbol":"NFLX"},'
+    b'{"instrumentId":"NKE","role":"priority","symbol":"NKE"},'
+    b'{"instrumentId":"NVDA","role":"priority","symbol":"NVDA"},'
+    b'{"instrumentId":"ORCL","role":"priority","symbol":"ORCL"},'
+    b'{"instrumentId":"PEP","role":"priority","symbol":"PEP"},'
+    b'{"instrumentId":"QCOM","role":"priority","symbol":"QCOM"},'
+    b'{"instrumentId":"SBUX","role":"priority","symbol":"SBUX"},'
+    b'{"instrumentId":"TSLA","role":"priority","symbol":"TSLA"},'
+    b'{"instrumentId":"UPS","role":"priority","symbol":"UPS"},'
+    b'{"instrumentId":"WMT","role":"priority","symbol":"WMT"},'
+    b'{"instrumentId":"XOM","role":"priority","symbol":"XOM"},'
+    b'{"instrumentId":"SPY","role":"benchmark","symbol":"SPY"},'
+    b'{"instrumentId":"QQQ","role":"benchmark","symbol":"QQQ"},'
+    b'{"instrumentId":"IWM","role":"benchmark","symbol":"IWM"},'
+    b'{"instrumentId":"XLC","role":"benchmark","symbol":"XLC"},'
+    b'{"instrumentId":"XLE","role":"benchmark","symbol":"XLE"},'
+    b'{"instrumentId":"XLF","role":"benchmark","symbol":"XLF"},'
+    b'{"instrumentId":"XLI","role":"benchmark","symbol":"XLI"},'
+    b'{"instrumentId":"XLK","role":"benchmark","symbol":"XLK"},'
+    b'{"instrumentId":"XLP","role":"benchmark","symbol":"XLP"},'
+    b'{"instrumentId":"XLRE","role":"benchmark","symbol":"XLRE"},'
+    b'{"instrumentId":"XLU","role":"benchmark","symbol":"XLU"},'
+    b'{"instrumentId":"XLV","role":"benchmark","symbol":"XLV"},'
+    b'{"instrumentId":"XLY","role":"benchmark","symbol":"XLY"},'
+    b'{"instrumentId":"SOXX","role":"benchmark","symbol":"SOXX"}'
+    b'],"schemaVersion":"rp001-s2-direction-neutral-instrument-master.v1"}'
+)
+_EXPECTED_INSTRUMENT_MASTER_SHA256: str = (
+    "0feb9fa68067ac9a8bd1844f2bb7f743dae00a97796cd0adb1106d1bc377758a"
+)
+_EXPECTED_ACQUISITION_CANONICAL_BYTES: bytes = (
+    b'{"adjustmentMode":"provider_native",'
+    b'"endAt":"2026-07-01T00:00:00Z",'
+    b'"feed":"historical_candles",'
+    b'"identityDomain":"rp001_s2.direction_neutral_archive_acquisition",'
+    b'"instrumentId":"AAPL","interval":"1m","provider":"toss",'
+    b'"schemaVersion":"rp001-s2-direction-neutral-acquisition-identity.v1",'
+    b'"sessionScope":"provider_all",'
+    b'"startAt":"2023-01-03T00:00:00Z","symbol":"AAPL"}'
+)
+_EXPECTED_ACQUISITION_SHA256: str = (
+    "1e1e65efb653853874c035f0290c8198913e972803eb94db4be4671ee175dfe4"
+)
 
 
 def _scope(**overrides: object) -> CollectionScope:
@@ -122,15 +202,15 @@ class DirectionNeutralInstrumentMasterTest(unittest.TestCase):
             len(first.entries),
         )
 
-        expected_source = json.dumps(
-            first.to_canonical_body(),
-            allow_nan=False,
-            ensure_ascii=False,
-            sort_keys=True,
-            separators=(",", ":"),
-        ).encode("utf-8")
-        self.assertEqual(first.canonical_json_bytes(), expected_source)
-        self.assertEqual(first.sha256, hashlib.sha256(expected_source).hexdigest())
+        self.assertEqual(
+            first.canonical_json_bytes(),
+            _EXPECTED_INSTRUMENT_MASTER_CANONICAL_BYTES,
+        )
+        self.assertEqual(first.sha256, _EXPECTED_INSTRUMENT_MASTER_SHA256)
+        self.assertEqual(
+            hashlib.sha256(_EXPECTED_INSTRUMENT_MASTER_CANONICAL_BYTES).hexdigest(),
+            _EXPECTED_INSTRUMENT_MASTER_SHA256,
+        )
 
     def test_instrument_master_rejects_duplicate_identity(self) -> None:
         entry = InstrumentMasterEntry(
@@ -141,6 +221,62 @@ class DirectionNeutralInstrumentMasterTest(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "duplicate_instrument_identity"):
             InstrumentMaster(entries=(entry, entry))
+
+    def test_instrument_master_entry_rejects_noncanonical_identity_and_role(
+        self,
+    ) -> None:
+        for field_name in ("instrument_id", "symbol"):
+            for invalid_value in _INVALID_IDENTIFIER_VALUES:
+                values: dict[str, object] = {
+                    "instrument_id": "AAPL",
+                    "symbol": "AAPL",
+                    "role": InstrumentRole.PRIORITY,
+                }
+                values[field_name] = invalid_value
+                with self.subTest(field_name=field_name, invalid_value=invalid_value):
+                    with self.assertRaisesRegex(
+                        ValueError,
+                        "instrument_master_identifier_invalid",
+                    ):
+                        InstrumentMasterEntry(**values)
+
+        with self.assertRaisesRegex(ValueError, "instrument_role_invalid"):
+            InstrumentMasterEntry(
+                instrument_id="AAPL",
+                symbol="AAPL",
+                role="priority",
+            )
+
+    def test_instrument_master_rejects_mutable_or_untyped_entry_collections(
+        self,
+    ) -> None:
+        entry = InstrumentMasterEntry(
+            instrument_id="AAPL",
+            symbol="AAPL",
+            role=InstrumentRole.PRIORITY,
+        )
+        mutable_entries = [entry]
+
+        with self.assertRaisesRegex(ValueError, "instrument_master_entries_invalid"):
+            InstrumentMaster(entries=mutable_entries)
+        for invalid_entries in ((), (object(),), None):
+            with self.subTest(invalid_entries=invalid_entries):
+                with self.assertRaisesRegex(
+                    ValueError,
+                    "instrument_master_entries_invalid",
+                ):
+                    InstrumentMaster(entries=invalid_entries)
+
+        master = InstrumentMaster(entries=tuple(mutable_entries))
+        initial_sha256 = master.sha256
+        mutable_entries.append(
+            InstrumentMasterEntry(
+                instrument_id="MSFT",
+                symbol="MSFT",
+                role=InstrumentRole.PRIORITY,
+            )
+        )
+        self.assertEqual(master.sha256, initial_sha256)
 
 
 class CollectionScopeContractTest(unittest.TestCase):
@@ -166,7 +302,7 @@ class CollectionScopeContractTest(unittest.TestCase):
         self.assertEqual(scope.interval, "1m")
         self.assertEqual(scope.sample_role, SampleRole.SEEN)
 
-    def test_collection_scope_rejects_empty_or_untyped_identifiers(self) -> None:
+    def test_collection_scope_rejects_noncanonical_or_untyped_identifiers(self) -> None:
         identifier_fields = (
             "provider",
             "feed",
@@ -177,7 +313,7 @@ class CollectionScopeContractTest(unittest.TestCase):
         )
 
         for field_name in identifier_fields:
-            for invalid_value in ("", "   ", None, 1):
+            for invalid_value in _INVALID_IDENTIFIER_VALUES:
                 with self.subTest(field_name=field_name, invalid_value=invalid_value):
                     with self.assertRaisesRegex(
                         ValueError,
@@ -265,15 +401,45 @@ class CollectionScopeContractTest(unittest.TestCase):
             tuple(scope.to_canonical_body()["sampleRole"] for scope in scopes),
             ("seen", "unseen", "confirmation"),
         )
+        self.assertEqual(
+            scopes[0].canonical_acquisition_json_bytes(),
+            _EXPECTED_ACQUISITION_CANONICAL_BYTES,
+        )
+        self.assertEqual(scopes[0].acquisition_key, _EXPECTED_ACQUISITION_SHA256)
+        self.assertEqual(scopes[0].acquisition_digest, _EXPECTED_ACQUISITION_SHA256)
+        self.assertEqual(
+            hashlib.sha256(_EXPECTED_ACQUISITION_CANONICAL_BYTES).hexdigest(),
+            _EXPECTED_ACQUISITION_SHA256,
+        )
 
-        expected_digest = hashlib.sha256(
-            scopes[0].canonical_acquisition_json_bytes()
-        ).hexdigest()
-        self.assertEqual(scopes[0].acquisition_key, expected_digest)
-        self.assertEqual(scopes[0].acquisition_digest, expected_digest)
-        self.assertNotEqual(
-            scopes[0].acquisition_key,
-            _scope(symbol="MSFT", instrument_id="MSFT").acquisition_key,
+    def test_every_acquisition_identity_field_changes_the_digest(self) -> None:
+        baseline = _scope()
+        identity_variants: dict[str, object] = {
+            "provider": "alpaca",
+            "feed": "daily_bars",
+            "instrument_id": "US0378331005",
+            "symbol": "MSFT",
+            "interval": "1d",
+            "start_at": datetime(2023, 1, 4, tzinfo=timezone.utc),
+            "end_at": datetime(2026, 6, 30, tzinfo=timezone.utc),
+            "adjustment_mode": "raw",
+            "session_scope": "provider_extended",
+        }
+
+        for field_name, changed_value in identity_variants.items():
+            with self.subTest(field_name=field_name):
+                self.assertNotEqual(
+                    baseline.acquisition_digest,
+                    _scope(**{field_name: changed_value}).acquisition_digest,
+                )
+
+        self.assertEqual(
+            baseline.acquisition_identity_body()["identityDomain"],
+            "rp001_s2.direction_neutral_archive_acquisition",
+        )
+        self.assertEqual(
+            baseline.acquisition_identity_body()["schemaVersion"],
+            "rp001-s2-direction-neutral-acquisition-identity.v1",
         )
 
 
