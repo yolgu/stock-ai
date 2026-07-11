@@ -240,6 +240,59 @@ class IntradayPaginationContractTest(unittest.TestCase):
                 page_limit=4,
             )
 
+    def test_decimal_volume_is_preserved_losslessly(self) -> None:
+        collector = IntradayMeasurementCollector(
+            transport=_QueueTransport(
+                (
+                    _candle_page(
+                        [_candle("2026-07-10T22:30:00+09:00", volume="10.500")],
+                        None,
+                    ),
+                )
+            ),
+            token_supplier=lambda: "ephemeral",
+            clock=lambda: datetime(2026, 7, 11, tzinfo=timezone.utc),
+        )
+
+        result = collector.collect_candles(
+            symbol="BA",
+            interval="1m",
+            adjusted=False,
+            start_at="2026-07-10T22:29:00+09:00",
+            end_at="2026-07-10T22:32:00+09:00",
+            initial_before="2026-07-10T22:32:00+09:00",
+            count=200,
+            page_limit=4,
+        )
+
+        self.assertEqual(result.analysis_rows[0].volume.text, "10.500")
+
+    def test_negative_decimal_volume_is_invalid(self) -> None:
+        collector = IntradayMeasurementCollector(
+            transport=_QueueTransport(
+                (
+                    _candle_page(
+                        [_candle("2026-07-10T22:30:00+09:00", volume="-0.1")],
+                        None,
+                    ),
+                )
+            ),
+            token_supplier=lambda: "ephemeral",
+            clock=lambda: datetime(2026, 7, 11, tzinfo=timezone.utc),
+        )
+
+        with self.assertRaisesRegex(MeasurementError, "INVALID_CANDLE_SHAPE"):
+            collector.collect_candles(
+                symbol="BA",
+                interval="1m",
+                adjusted=False,
+                start_at="2026-07-10T22:29:00+09:00",
+                end_at="2026-07-10T22:32:00+09:00",
+                initial_before="2026-07-10T22:32:00+09:00",
+                count=200,
+                page_limit=4,
+            )
+
     def test_same_instant_with_a_different_offset_representation_is_invalid(self) -> None:
         collector = IntradayMeasurementCollector(
             transport=_QueueTransport(

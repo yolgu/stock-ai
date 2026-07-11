@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
@@ -14,8 +15,8 @@ from rp001.toss_research_collector import (
     HttpRequest,
     HttpResponse,
     RawHttpCapture,
+    _canonical_scalar,
     _make_capture,
-    _nonnegative_integer_scalar,
     _parse_json,
     _parse_timestamp,
     _positive_decimal_scalar,
@@ -24,6 +25,7 @@ from rp001.toss_research_collector import (
 
 
 _CANDLES_URL = "https://openapi.tossinvest.com/api/v1/candles"
+_UNSIGNED_DECIMAL_PATTERN = re.compile(r"^[0-9]+(?:\.[0-9]+)?$")
 _CANDLE_FIELDS = frozenset(
     {"timestamp", "openPrice", "highPrice", "lowPrice", "closePrice", "volume", "currency"}
 )
@@ -302,7 +304,7 @@ def _parse_candle_row(
         high_price = _positive_decimal_scalar(value["highPrice"])
         low_price = _positive_decimal_scalar(value["lowPrice"])
         close_price = _positive_decimal_scalar(value["closePrice"])
-        volume = _nonnegative_integer_scalar(value["volume"])
+        volume = _nonnegative_decimal_scalar(value["volume"])
     except CollectorError:
         raise MeasurementError("INVALID_CANDLE_SHAPE", (capture,)) from None
     low = _decimal(low_price)
@@ -414,3 +416,10 @@ def _parse_any_instant(value: str) -> datetime:
 
 def _decimal(value: CanonicalScalar) -> Decimal:
     return Decimal(value.text)
+
+
+def _nonnegative_decimal_scalar(value: object) -> CanonicalScalar:
+    scalar = _canonical_scalar(value)
+    if _UNSIGNED_DECIMAL_PATTERN.fullmatch(scalar.text) is None:
+        raise CollectorError("INVALID_SCALAR")
+    return scalar
