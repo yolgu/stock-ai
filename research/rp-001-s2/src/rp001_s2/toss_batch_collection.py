@@ -36,10 +36,11 @@ from rp001_s2.toss_intraday_run import (
     run_toss_minute_shard,
     validate_toss_minute_scope,
 )
+from rp001_s2.toss_boundary import _MINIMUM_REQUEST_INTERVAL_SECONDS
 
 
 _TERMINAL_EVENT_TYPE = "toss_minute_scope_terminal"
-_DEFAULT_MINIMUM_INTERVAL_SECONDS = 1.0
+_DEFAULT_MINIMUM_INTERVAL_SECONDS = 0.25
 _STABLE_ERROR_CODE = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,127}$")
 _INVALID_ARCHIVE_CODES = frozenset(
     {
@@ -108,7 +109,7 @@ class GlobalMarketDataPacer:
         if (
             isinstance(minimum_interval_seconds, bool)
             or not isinstance(minimum_interval_seconds, (int, float))
-            or minimum_interval_seconds < _DEFAULT_MINIMUM_INTERVAL_SECONDS
+            or minimum_interval_seconds < _MINIMUM_REQUEST_INTERVAL_SECONDS
         ):
             raise TossBatchCollectionError("market_data_interval_invalid")
         self._minimum_interval_seconds = float(minimum_interval_seconds)

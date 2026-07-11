@@ -655,8 +655,8 @@ class TossMinuteBatchEvidenceTest(unittest.TestCase):
 
 
 class GlobalMarketDataPacerTest(unittest.TestCase):
-    def test_default_interval_is_at_least_one_second(self) -> None:
-        moments = iter((0.0, 0.25, 1.0))
+    def test_default_paces_four_requests_per_second(self) -> None:
+        moments = iter((0.0, 0.1, 0.25, 0.35, 0.5, 0.6, 0.75))
         sleeps: list[float] = []
         pacer = GlobalMarketDataPacer(
             monotonic=lambda: next(moments),
@@ -665,9 +665,22 @@ class GlobalMarketDataPacerTest(unittest.TestCase):
 
         pacer()
         pacer()
+        pacer()
+        pacer()
 
-        self.assertGreaterEqual(pacer.minimum_interval_seconds, 1.0)
-        self.assertEqual(sleeps, [0.75])
+        self.assertEqual(0.25, pacer.minimum_interval_seconds)
+        self.assertEqual(3, len(sleeps))
+        for duration in sleeps:
+            self.assertAlmostEqual(0.15, duration)
+
+    def test_interval_cannot_cross_transport_safety_floor(self) -> None:
+        with self.assertRaisesRegex(
+            TossBatchCollectionError,
+            "market_data_interval_invalid",
+        ):
+            GlobalMarketDataPacer(0.209)
+
+        self.assertEqual(0.25, GlobalMarketDataPacer(0.25).minimum_interval_seconds)
 
 
 if __name__ == "__main__":
