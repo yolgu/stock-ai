@@ -101,7 +101,7 @@ def load_verified_daily_series(
     root: Path,
     scopes: Sequence[CollectionScope],
 ) -> VerifiedDailySeries:
-    """Verify and concatenate complete daily v2 archives without imputation."""
+    """Load completed and row-bearing partial daily v2 archives without fill."""
     if not isinstance(root, Path) or not root.is_dir():
         raise EmpiricalArchiveError("archive_root_invalid")
     values = tuple(scopes)

@@ -8,6 +8,7 @@ import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
+from enum import Enum
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -66,6 +67,12 @@ class EpisodeCompetitivePath:
     source_evidence_sha256: str
 
 
+class ExcludedEpisodeReason(str, Enum):
+    FAMILY_CONTRACT_MISMATCH = "family_contract_mismatch"
+    FAMILY_THRESHOLD_UNAVAILABLE = "family_threshold_unavailable"
+    INTRABAR_RANGE_UNAVAILABLE = "intrabar_range_unavailable"
+
+
 @dataclass(frozen=True)
 class ExcludedEpisode:
     row_id: str
@@ -73,8 +80,12 @@ class ExcludedEpisode:
     session_id: str
     horizon: LabelHorizon
     label: CompetitivePathLabel
-    reason: str
+    reason: ExcludedEpisodeReason
     source_evidence_sha256: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.reason, ExcludedEpisodeReason):
+            raise ValueError("excluded_episode_reason_invalid")
 
 
 @dataclass(frozen=True)
@@ -361,7 +372,7 @@ def analyze_direction_neutral_dataset(
             "excludedEpisodes": [
                 {
                     "rowId": value.row_id,
-                    "reason": value.reason,
+                    "reason": value.reason.value,
                     "sourceEvidenceSha256": value.source_evidence_sha256,
                 }
                 for value in excluded
@@ -412,18 +423,20 @@ def _competitive_path_example(
     )
 
 
-def _example_exclusion_reason(screening: ScreeningResult) -> str | None:
+def _example_exclusion_reason(
+    screening: ScreeningResult,
+) -> ExcludedEpisodeReason | None:
     screens = {value.family: value for value in screening.family_screens}
     if set(screens) != set(FAMILY_NAMES):
-        return "family_contract_mismatch"
+        return ExcludedEpisodeReason.FAMILY_CONTRACT_MISMATCH
+    if screening.observation.family_scores.get("intrabar_log_range") is None:
+        return ExcludedEpisodeReason.INTRABAR_RANGE_UNAVAILABLE
     if any(
         screens[family].exceeds_p99 is None
         or screens[family].exceeds_p999 is None
         for family in FAMILY_NAMES
     ):
-        return "family_threshold_unavailable"
-    if screening.observation.family_scores.get("intrabar_log_range") is None:
-        return "intrabar_range_unavailable"
+        return ExcludedEpisodeReason.FAMILY_THRESHOLD_UNAVAILABLE
     return None
 
 

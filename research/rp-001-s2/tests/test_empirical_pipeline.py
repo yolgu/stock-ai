@@ -30,6 +30,7 @@ from rp001_s2.direction_neutral_overheat import (
 )
 from rp001_s2.empirical_archive_loader import DailyScopeLedgerStatus
 from rp001_s2.empirical_pipeline import (
+    ExcludedEpisodeReason,
     analyze_direction_neutral_dataset,
     run_direction_neutral_empirical_pipeline,
 )
@@ -356,9 +357,36 @@ class EmpiricalPipelineTest(unittest.TestCase):
         self.assertEqual(result.excluded_episode_count, 1)
         self.assertEqual(
             result.excluded_episodes[0].reason,
-            "family_threshold_unavailable",
+            ExcludedEpisodeReason.FAMILY_THRESHOLD_UNAVAILABLE,
         )
         self.assertEqual(len(result.excluded_episodes[0].source_evidence_sha256), 64)
+
+    def test_intrabar_range_missing_uses_dedicated_typed_exclusion_reason(
+        self,
+    ) -> None:
+        result = analyze_direction_neutral_dataset(
+            dataset=_feature_dataset(
+                missing_family_at_anchor="intrabar_log_range"
+            ),
+            horizon=LabelHorizon.MINUTES_5,
+            input_evidence_sha256="f" * 64,
+        )
+
+        self.assertEqual(len(result.episode_results), 1)
+        self.assertEqual(
+            result.episode_results[0].label.label,
+            CompetitivePathLabel.UPSIDE_ACCELERATION,
+        )
+        self.assertIsNone(result.episode_results[0].example)
+        self.assertEqual(result.excluded_episode_count, 1)
+        self.assertIsInstance(
+            result.excluded_episodes[0].reason,
+            ExcludedEpisodeReason,
+        )
+        self.assertIs(
+            result.excluded_episodes[0].reason,
+            ExcludedEpisodeReason.INTRABAR_RANGE_UNAVAILABLE,
+        )
 
     def test_minute_indexed_screening_is_equivalent_to_naive_screening(self) -> None:
         dataset = _feature_dataset()
