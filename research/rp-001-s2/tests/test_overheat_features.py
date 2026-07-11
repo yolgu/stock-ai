@@ -9,6 +9,7 @@ from rp001.toss_research_collector import CanonicalScalar
 from rp001_s2.archive_storage import CanonicalMinuteBar
 from rp001_s2.overheat_features import (
     FeatureMarket,
+    FeatureSession,
     build_direction_neutral_features,
 )
 
@@ -117,7 +118,119 @@ def _inverse_session(
     return tuple(bars)
 
 
+def _sessions(*values: datetime) -> tuple[FeatureSession, ...]:
+    return tuple(FeatureSession(value.date(), 390) for value in values)
+
+
 class DirectionNeutralFeatureTest(unittest.TestCase):
+    def test_gap_is_not_reused_as_intraday_return_or_realized_volatility(self) -> None:
+        first = datetime(2026, 7, 8, tzinfo=timezone.utc)
+        second = datetime(2026, 7, 9, tzinfo=timezone.utc)
+        symbol = _session("AAPL", first, ("100",) * 390) + _session(
+            "AAPL", second, ("120",) * 5
+        )
+        benchmark = _session(
+            "SPY", first, ("500",) * 390, raw_character="b"
+        ) + _session("SPY", second, ("500",) * 5, raw_character="b")
+
+        dataset = build_direction_neutral_features(
+            symbol_bars=symbol,
+            benchmark_bars=benchmark,
+            market=FeatureMarket.US_REGULAR,
+            sessions=(
+                FeatureSession(first.date(), 390),
+                FeatureSession(second.date(), 390),
+            ),
+        )
+
+        opening = next(
+            item for item in dataset.observations if item.session_date == second.date()
+        )
+        self.assertGreater(opening.family_scores["absolute_gap"], 0.18)
+        self.assertEqual(
+            opening.family_scores["absolute_market_residual_return"],
+            0.0,
+        )
+        fifth = tuple(
+            item for item in dataset.observations if item.session_date == second.date()
+        )[-1]
+        self.assertEqual(fifth.family_scores["realized_volatility_5m"], 0.0)
+        self.assertEqual(fifth.family_scores["absolute_gap"], 0.0)
+
+    def test_explicit_session_axis_preserves_missing_session_coverage_gap(self) -> None:
+        first = datetime(2026, 7, 8, tzinfo=timezone.utc)
+        missing = datetime(2026, 7, 9, tzinfo=timezone.utc)
+        third = datetime(2026, 7, 10, tzinfo=timezone.utc)
+        symbol = _session("AAPL", first, ("100",) * 390) + _session(
+            "AAPL", third, ("101",)
+        )
+        benchmark = _session(
+            "SPY", first, ("500",) * 390, raw_character="b"
+        ) + _session("SPY", third, ("501",), raw_character="b")
+
+        dataset = build_direction_neutral_features(
+            symbol_bars=symbol,
+            benchmark_bars=benchmark,
+            market=FeatureMarket.US_REGULAR,
+            sessions=(
+                FeatureSession(first.date(), 390),
+                FeatureSession(missing.date(), 390),
+                FeatureSession(third.date(), 390),
+            ),
+        )
+
+        before = next(
+            item
+            for item in reversed(dataset.observations)
+            if item.session_date == first.date()
+        )
+        after = next(
+            item for item in dataset.observations if item.session_date == third.date()
+        )
+        self.assertEqual(after.session_ordinal - before.session_ordinal, 2)
+        self.assertEqual(after.market_minute_ordinal - before.market_minute_ordinal, 391)
+        self.assertIsNone(after.family_scores["absolute_gap"])
+
+    def test_realized_volatility_hash_binds_the_predecessor_of_first_return(self) -> None:
+        session = datetime(2026, 7, 8, tzinfo=timezone.utc)
+        symbol = _session(
+            "AAPL", session, ("100", "101", "102", "103", "104", "105")
+        )
+        benchmark = _session(
+            "SPY", session, ("500", "501", "502", "503", "504", "505"), raw_character="b"
+        )
+        sessions = (FeatureSession(session.date(), 390),)
+        original = build_direction_neutral_features(
+            symbol_bars=symbol,
+            benchmark_bars=benchmark,
+            market=FeatureMarket.US_REGULAR,
+            sessions=sessions,
+        ).observations[-1]
+        changed_predecessor = replace(
+            symbol[0],
+            close_price=CanonicalScalar("json_string", "50"),
+            high_price=CanonicalScalar("json_string", "100"),
+            low_price=CanonicalScalar("json_string", "49"),
+            raw_body_sha256="c" * 64,
+            occurrences=(("c" * 64, 0, symbol[0].source_row_index),),
+        )
+
+        changed = build_direction_neutral_features(
+            symbol_bars=(changed_predecessor,) + symbol[1:],
+            benchmark_bars=benchmark,
+            market=FeatureMarket.US_REGULAR,
+            sessions=sessions,
+        ).observations[-1]
+
+        self.assertNotEqual(
+            original.family_scores["realized_volatility_5m"],
+            changed.family_scores["realized_volatility_5m"],
+        )
+        self.assertNotEqual(
+            original.source_window_sha256,
+            changed.source_window_sha256,
+        )
+
     def test_builds_traceable_proxy_features_on_regular_market_minutes(self) -> None:
         first = datetime(2026, 7, 8, tzinfo=timezone.utc)
         second = datetime(2026, 7, 9, tzinfo=timezone.utc)
@@ -132,6 +245,7 @@ class DirectionNeutralFeatureTest(unittest.TestCase):
             symbol_bars=symbol_bars,
             benchmark_bars=benchmark_bars,
             market=FeatureMarket.US_REGULAR,
+            sessions=_sessions(first, second),
         )
 
         self.assertEqual(dataset.claim_level, "price_volume_regime_proxy_only")
@@ -168,6 +282,7 @@ class DirectionNeutralFeatureTest(unittest.TestCase):
             symbol_bars=symbol,
             benchmark_bars=benchmark,
             market=FeatureMarket.US_REGULAR,
+            sessions=_sessions(session),
         ).observations[4]
         changed_future = replace(
             symbol[5],
@@ -183,6 +298,7 @@ class DirectionNeutralFeatureTest(unittest.TestCase):
             symbol_bars=symbol[:5] + (changed_future,),
             benchmark_bars=benchmark,
             market=FeatureMarket.US_REGULAR,
+            sessions=_sessions(session),
         ).observations[4]
 
         self.assertEqual(original.family_scores, repeated.family_scores)
@@ -203,11 +319,13 @@ class DirectionNeutralFeatureTest(unittest.TestCase):
             symbol_bars=symbol,
             benchmark_bars=benchmark,
             market=FeatureMarket.US_REGULAR,
+            sessions=_sessions(session),
         ).observations[-1]
         scaled = build_direction_neutral_features(
             symbol_bars=scaled_symbol,
             benchmark_bars=scaled_benchmark,
             market=FeatureMarket.US_REGULAR,
+            sessions=_sessions(session),
         ).observations[-1]
 
         for family in (
@@ -233,6 +351,7 @@ class DirectionNeutralFeatureTest(unittest.TestCase):
                 "SPY", session, benchmark_closes, raw_character="b"
             ),
             market=FeatureMarket.US_REGULAR,
+            sessions=_sessions(session),
         ).observations[-1]
         reversed_result = build_direction_neutral_features(
             symbol_bars=_inverse_session("AAPL", session, closes),
@@ -240,6 +359,7 @@ class DirectionNeutralFeatureTest(unittest.TestCase):
                 "SPY", session, benchmark_closes, raw_character="b"
             ),
             market=FeatureMarket.US_REGULAR,
+            sessions=_sessions(session),
         ).observations[-1]
 
         for family in (
@@ -264,6 +384,7 @@ class DirectionNeutralFeatureTest(unittest.TestCase):
             symbol_bars=symbol[:2] + symbol[3:],
             benchmark_bars=benchmark,
             market=FeatureMarket.US_REGULAR,
+            sessions=_sessions(session),
         )
 
         ordinals = tuple(item.market_minute_ordinal for item in dataset.observations)

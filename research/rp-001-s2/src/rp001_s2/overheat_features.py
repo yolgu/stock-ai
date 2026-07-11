@@ -7,7 +7,7 @@ import json
 import math
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import datetime, time, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from enum import Enum
 from zoneinfo import ZoneInfo
@@ -29,6 +29,20 @@ class DirectionNeutralFeatureDataset:
     claim_level: str
     availability_basis: str
     observations: tuple[DirectionNeutralObservation, ...]
+
+
+@dataclass(frozen=True)
+class FeatureSession:
+    session_date: date
+    regular_minutes: int
+
+    def __post_init__(self) -> None:
+        if (
+            type(self.session_date) is not date
+            or type(self.regular_minutes) is not int
+            or not 1 <= self.regular_minutes <= 390
+        ):
+            raise FeatureBuildError("feature_session_invalid")
 
 
 @dataclass(frozen=True)
@@ -87,6 +101,7 @@ def build_direction_neutral_features(
     symbol_bars: Sequence[CanonicalMinuteBar],
     benchmark_bars: Sequence[CanonicalMinuteBar],
     market: FeatureMarket,
+    sessions: Sequence[FeatureSession],
 ) -> DirectionNeutralFeatureDataset:
     """Build point-in-time proxy ingredients without filling missing minutes."""
     if not isinstance(market, FeatureMarket):
@@ -101,11 +116,11 @@ def build_direction_neutral_features(
     if symbol == benchmark_symbol:
         raise FeatureBuildError("feature_benchmark_invalid")
     _require_compatible_scopes(prepared_symbol, prepared_benchmark)
-
-    session_dates = tuple(sorted({bar.local_date for bar in prepared_symbol}))
-    session_ordinals = {
-        session_date: ordinal for ordinal, session_date in enumerate(session_dates)
-    }
+    session_ordinals, session_bases, session_minutes = _session_axis(
+        tuple(sessions),
+        prepared_symbol,
+        prepared_benchmark,
+    )
     symbol_returns = _returns(prepared_symbol)
     benchmark_returns = _returns(prepared_benchmark)
     benchmark_by_event = {
@@ -118,7 +133,7 @@ def build_direction_neutral_features(
         bar.event_start: value
         for bar, value in zip(prepared_benchmark, benchmark_returns, strict=True)
     }
-    session_gaps = _session_gaps(prepared_symbol)
+    session_gaps = _session_gaps(prepared_symbol, session_minutes)
 
     observations: list[DirectionNeutralObservation] = []
     for index, (bar, signed_return) in enumerate(
@@ -126,10 +141,7 @@ def build_direction_neutral_features(
     ):
         if signed_return is None:
             continue
-        market_minute_ordinal = (
-            session_ordinals[bar.local_date] * contract.minutes_per_session
-            + bar.session_offset
-        )
+        market_minute_ordinal = session_bases[bar.local_date] + bar.session_offset
         benchmark_bar = benchmark_by_event.get(bar.event_start)
         benchmark_return = benchmark_return_by_event.get(bar.event_start)
         residual = (
@@ -137,25 +149,20 @@ def build_direction_neutral_features(
             if benchmark_bar is None or benchmark_return is None
             else abs(signed_return - benchmark_return)
         )
-        realized = _realized_volatility(
-            prepared_symbol,
-            symbol_returns,
-            index,
-            session_ordinals,
-            contract,
-        )
+        realized = _realized_volatility(prepared_symbol, symbol_returns, index)
         benchmark_index = benchmark_index_by_event.get(bar.event_start)
         benchmark_sources = (
             ()
             if benchmark_index is None
-            else prepared_benchmark[max(0, benchmark_index - 1) : benchmark_index + 1]
+            else _return_sources(prepared_benchmark, benchmark_index)
         )
         gap, gap_source = session_gaps[bar.local_date]
+        gap_score = gap if bar.session_offset == 0 else 0.0
         source_hash = _source_window_hash(
             prepared_symbol,
             index,
             benchmark_sources,
-            gap_source,
+            gap_source if bar.session_offset == 0 else None,
         )
         available_at = bar.bar_end + timedelta(seconds=1)
         observations.append(
@@ -174,7 +181,7 @@ def build_direction_neutral_features(
                 log_high=math.log(bar.high_price),
                 log_close=math.log(bar.close_price),
                 family_scores={
-                    "absolute_gap": gap,
+                    "absolute_gap": gap_score,
                     "absolute_market_residual_return": residual,
                     "intrabar_log_range": math.log(bar.high_price / bar.low_price),
                     "realized_volatility_5m": realized,
@@ -282,6 +289,33 @@ def _require_compatible_scopes(
         raise FeatureBuildError("feature_scope_mismatch")
 
 
+def _session_axis(
+    sessions: tuple[FeatureSession, ...],
+    symbol: tuple[_PreparedBar, ...],
+    benchmark: tuple[_PreparedBar, ...],
+) -> tuple[dict[str, int], dict[str, int], dict[str, int]]:
+    if not sessions or any(not isinstance(value, FeatureSession) for value in sessions):
+        raise FeatureBuildError("feature_session_invalid")
+    dates = tuple(value.session_date for value in sessions)
+    if any(current <= previous for previous, current in zip(dates, dates[1:])):
+        raise FeatureBuildError("feature_session_invalid")
+    ordinals: dict[str, int] = {}
+    bases: dict[str, int] = {}
+    minutes: dict[str, int] = {}
+    next_base = 0
+    for ordinal, session in enumerate(sessions):
+        key = session.session_date.isoformat()
+        ordinals[key] = ordinal
+        bases[key] = next_base
+        minutes[key] = session.regular_minutes
+        next_base += session.regular_minutes
+    for bar in symbol + benchmark:
+        expected_minutes = minutes.get(bar.local_date)
+        if expected_minutes is None or bar.session_offset >= expected_minutes:
+            raise FeatureBuildError("feature_session_scope_mismatch")
+    return ordinals, bases, minutes
+
+
 def _returns(bars: tuple[_PreparedBar, ...]) -> tuple[float | None, ...]:
     values: list[float | None] = []
     previous: _PreparedBar | None = None
@@ -289,7 +323,7 @@ def _returns(bars: tuple[_PreparedBar, ...]) -> tuple[float | None, ...]:
         if previous is None:
             values.append(math.log(bar.close_price / bar.open_price))
         elif bar.local_date != previous.local_date:
-            values.append(math.log(bar.close_price / previous.close_price))
+            values.append(math.log(bar.close_price / bar.open_price))
         elif bar.session_offset == previous.session_offset + 1:
             values.append(math.log(bar.close_price / previous.close_price))
         else:
@@ -300,14 +334,18 @@ def _returns(bars: tuple[_PreparedBar, ...]) -> tuple[float | None, ...]:
 
 def _session_gaps(
     bars: tuple[_PreparedBar, ...],
+    session_minutes: dict[str, int],
 ) -> dict[str, tuple[float | None, _PreparedBar | None]]:
     grouped: dict[str, list[_PreparedBar]] = {}
     for bar in bars:
         grouped.setdefault(bar.local_date, []).append(bar)
     gaps: dict[str, tuple[float | None, _PreparedBar | None]] = {}
     previous_close_bar: _PreparedBar | None = None
-    for session_date in sorted(grouped):
-        session = grouped[session_date]
+    for session_date in session_minutes:
+        session = grouped.get(session_date)
+        if not session:
+            previous_close_bar = None
+            continue
         gap = (
             None
             if previous_close_bar is None or session[0].session_offset != 0
@@ -316,7 +354,13 @@ def _session_gaps(
             )
         )
         gaps[session_date] = (gap, previous_close_bar)
-        previous_close_bar = session[-1]
+        expected_offsets = range(session_minutes[session_date])
+        actual_offsets = tuple(bar.session_offset for bar in session)
+        previous_close_bar = (
+            session[-1]
+            if actual_offsets == tuple(expected_offsets)
+            else None
+        )
     return gaps
 
 
@@ -324,18 +368,14 @@ def _realized_volatility(
     bars: tuple[_PreparedBar, ...],
     returns: tuple[float | None, ...],
     index: int,
-    session_ordinals: dict[str, int],
-    contract: _MarketContract,
 ) -> float | None:
     if index < 4:
         return None
     window_bars = bars[index - 4 : index + 1]
-    ordinals = tuple(
-        session_ordinals[bar.local_date] * contract.minutes_per_session
-        + bar.session_offset
-        for bar in window_bars
-    )
-    if any(current != previous + 1 for previous, current in zip(ordinals, ordinals[1:])):
+    if len({bar.local_date for bar in window_bars}) != 1:
+        return None
+    offsets = tuple(bar.session_offset for bar in window_bars)
+    if any(current != previous + 1 for previous, current in zip(offsets, offsets[1:])):
         return None
     window_returns = returns[index - 4 : index + 1]
     if any(value is None for value in window_returns):
@@ -351,8 +391,17 @@ def _source_window_hash(
     benchmark_sources: tuple[_PreparedBar, ...],
     gap_source: _PreparedBar | None,
 ) -> str:
-    window = bars[max(0, index - 4) : index + 1]
-    source_bars = list(window) + list(benchmark_sources)
+    window_start = max(0, index - 4)
+    window = list(bars[window_start : index + 1])
+    if window_start > 0:
+        first = bars[window_start]
+        predecessor = bars[window_start - 1]
+        if (
+            first.local_date == predecessor.local_date
+            and first.session_offset == predecessor.session_offset + 1
+        ):
+            window.insert(0, predecessor)
+    source_bars = window + list(benchmark_sources)
     if gap_source is not None:
         source_bars.append(gap_source)
     unique_sources: dict[tuple[str, int, int], _PreparedBar] = {}
@@ -387,6 +436,22 @@ def _source_window_hash(
         separators=(",", ":"),
     ).encode("utf-8")
     return hashlib.sha256(body).hexdigest()
+
+
+def _return_sources(
+    bars: tuple[_PreparedBar, ...],
+    index: int,
+) -> tuple[_PreparedBar, ...]:
+    current = bars[index]
+    if index == 0:
+        return (current,)
+    previous = bars[index - 1]
+    if (
+        current.local_date == previous.local_date
+        and current.session_offset == previous.session_offset + 1
+    ):
+        return (previous, current)
+    return (current,)
 
 
 def _utc(value: str) -> datetime:
