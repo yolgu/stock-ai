@@ -166,15 +166,19 @@ class _Dependencies:
         invalid_symbols: frozenset[str] = frozenset(),
         partial_symbols: frozenset[str] = frozenset(),
         unavailable_symbols: frozenset[str] = frozenset(),
+        session_error_code: str | None = None,
     ) -> None:
         self.failed_symbols = failed_symbols
         self.invalid_symbols = invalid_symbols
         self.partial_symbols = partial_symbols
         self.unavailable_symbols = unavailable_symbols
+        self.session_error_code = session_error_code
         self.credential_paths: list[Path] = []
         self.shard_symbols: list[str] = []
         self.pacer_ids: list[int] = []
         self.failure_captures: dict[str, RawHttpCapture] = {}
+        self.session_open_count = 0
+        self.session_close_count = 0
 
     def load_credentials(self, path: Path) -> dict[str, str]:
         self.credential_paths.append(path)
@@ -183,20 +187,29 @@ class _Dependencies:
             "TOSS_CLIENT_SECRET": "private-value",
         }
 
-    def run_shard(
+    def open_session(
         self,
-        scope: CollectionScope,
         *,
         environment: MutableMapping[str, str],
         clock: Callable[[], datetime],
+    ) -> _Dependencies:
+        del clock
+        self.assert_ephemeral_environment(environment)
+        environment.clear()
+        self.session_open_count += 1
+        if self.session_error_code is not None:
+            raise IntradayRunError(self.session_error_code)
+        return self
+
+    def collect(
+        self,
+        scope: CollectionScope,
+        *,
         request_pacer: Callable[[], None],
     ) -> IntradayCandleCollection:
-        del clock
         self.shard_symbols.append(scope.symbol)
         self.pacer_ids.append(id(request_pacer))
         request_pacer()
-        self.assert_ephemeral_environment(environment)
-        environment.clear()
         capture = _capture(scope)
         if scope.symbol in self.failed_symbols:
             self.failure_captures[scope.symbol] = capture
@@ -216,6 +229,9 @@ class _Dependencies:
                 completion_reason="provider_terminal_before_start",
             )
         return collection
+
+    def close(self) -> None:
+        self.session_close_count += 1
 
     def canonicalize(
         self,
@@ -259,7 +275,7 @@ def _run(
         request_pacer=pacer or _RecordingPacer(),
         free_bytes=free_bytes,
         credential_loader=dependencies.load_credentials,
-        shard_runner=dependencies.run_shard,
+        session_factory=dependencies.open_session,
         canonicalizer=dependencies.canonicalize,
     )
 
@@ -310,6 +326,8 @@ class TossMinuteBatchResumeTest(unittest.TestCase):
             self.assertEqual(resumed.resumed_count, 1)
             self.assertEqual(resumed_dependencies.credential_paths, [])
             self.assertEqual(resumed_dependencies.shard_symbols, [])
+            self.assertEqual(resumed_dependencies.session_open_count, 0)
+            self.assertEqual(resumed_dependencies.session_close_count, 0)
             self.assertTrue(resumed.terminals[0].resumed_from_verified_archive)
             self.assertEqual(resumed.terminals[0].row_count, 1)
             self.assertEqual(resumed.terminals[0].capture_count, 1)
@@ -409,7 +427,7 @@ class TossMinuteBatchResumeTest(unittest.TestCase):
                     ledger_root=root / "private-ledger",
                     clock=lambda: datetime(2026, 7, 11, tzinfo=timezone.utc),
                     credential_loader=dependencies.load_credentials,
-                    shard_runner=dependencies.run_shard,
+                    session_factory=dependencies.open_session,
                     canonicalizer=dependencies.canonicalize,
                 )
 
@@ -440,7 +458,9 @@ class TossMinuteBatchResumeTest(unittest.TestCase):
             (BatchScopeStatus.FAILED, BatchScopeStatus.COMPLETED),
         )
         self.assertEqual(dependencies.shard_symbols, ["AAPL", "MSFT"])
-        self.assertEqual(len(dependencies.credential_paths), 2)
+        self.assertEqual(len(dependencies.credential_paths), 1)
+        self.assertEqual(dependencies.session_open_count, 1)
+        self.assertEqual(dependencies.session_close_count, 1)
         self.assertEqual(len(set(dependencies.pacer_ids)), 1)
         self.assertEqual(pacer.calls, 2)
         self.assertEqual(
@@ -459,6 +479,25 @@ class TossMinuteBatchResumeTest(unittest.TestCase):
         )
         self.assertEqual(len(failure_manifest["rawArtifacts"]), 1)
         self.assertEqual(failure_manifest["canonicalArtifact"]["rowCount"], 0)
+
+    def test_session_open_failure_is_reused_without_reauthentication(self) -> None:
+        scopes = (_scope("AAPL"), _scope("MSFT", minute_offset=10))
+        dependencies = _Dependencies(session_error_code="authentication_failed")
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            summary = _run(Path(temporary_directory), scopes, dependencies)
+
+        self.assertEqual(
+            tuple(terminal.status for terminal in summary.terminals),
+            (BatchScopeStatus.FAILED, BatchScopeStatus.FAILED),
+        )
+        self.assertEqual(
+            tuple(terminal.error_code for terminal in summary.terminals),
+            ("authentication_failed", "authentication_failed"),
+        )
+        self.assertEqual(len(dependencies.credential_paths), 1)
+        self.assertEqual(dependencies.session_open_count, 1)
+        self.assertEqual(dependencies.session_close_count, 0)
 
     def test_invalid_capture_is_persisted_without_blocking_later_success(self) -> None:
         scope = _scope("AAPL")
@@ -674,11 +713,13 @@ class GlobalMarketDataPacerTest(unittest.TestCase):
             self.assertAlmostEqual(0.15, duration)
 
     def test_interval_cannot_cross_transport_safety_floor(self) -> None:
-        with self.assertRaisesRegex(
-            TossBatchCollectionError,
-            "market_data_interval_invalid",
-        ):
-            GlobalMarketDataPacer(0.209)
+        for invalid_interval in (0.209, float("nan"), float("inf"), float("-inf")):
+            with self.subTest(invalid_interval=invalid_interval):
+                with self.assertRaisesRegex(
+                    TossBatchCollectionError,
+                    "market_data_interval_invalid",
+                ):
+                    GlobalMarketDataPacer(invalid_interval)
 
         self.assertEqual(0.25, GlobalMarketDataPacer(0.25).minimum_interval_seconds)
 
