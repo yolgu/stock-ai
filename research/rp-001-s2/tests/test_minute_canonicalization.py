@@ -219,6 +219,7 @@ class MinuteCanonicalizationTest(unittest.TestCase):
 
     def test_krw_session_date_uses_asia_seoul(self) -> None:
         scope, collection = _toss_collection()
+        scope = replace(scope, instrument_id="000660", symbol="000660")
         krw = replace(
             collection.analysis_rows[0],
             currency="KRW",
@@ -226,6 +227,7 @@ class MinuteCanonicalizationTest(unittest.TestCase):
         )
         collection = replace(
             collection,
+            symbol="000660",
             analysis_rows=(krw,),
             audit_only_rows=(),
         )
@@ -233,6 +235,47 @@ class MinuteCanonicalizationTest(unittest.TestCase):
         bars = canonicalize_toss_collection(scope, collection)
 
         self.assertEqual(bars[0].session_date, "2026-07-01")
+
+    def test_currency_follows_market_symbol_without_collapsing_stable_identity(self) -> None:
+        scope, collection = _toss_collection()
+        aapl_krw = replace(collection.analysis_rows[0], currency="KRW")
+        korean_scope = replace(scope, instrument_id="000660", symbol="000660")
+        korean_collection = replace(collection, symbol="000660")
+        invalid_currency_cases = (
+            (
+                scope,
+                replace(
+                    collection,
+                    analysis_rows=(aapl_krw,),
+                    audit_only_rows=(),
+                ),
+            ),
+            (
+                korean_scope,
+                replace(korean_collection, audit_only_rows=()),
+            ),
+        )
+
+        for invalid_scope, invalid_collection in invalid_currency_cases:
+            with self.subTest(scope=invalid_scope):
+                with self.assertRaises(MinuteCanonicalizationError):
+                    canonicalize_toss_collection(invalid_scope, invalid_collection)
+
+        stable_identity = replace(scope, instrument_id="stable-instrument-id")
+        stable_bars = canonicalize_toss_collection(stable_identity, collection)
+        self.assertEqual(stable_bars[1].instrument_id, "stable-instrument-id")
+
+        dynamic_scope = replace(
+            scope,
+            instrument_id="stable-newco-id",
+            symbol="NEWCO",
+        )
+        dynamic_collection = replace(collection, symbol="NEWCO")
+        dynamic_bars = canonicalize_toss_collection(
+            dynamic_scope,
+            dynamic_collection,
+        )
+        self.assertTrue(all(bar.currency == "USD" for bar in dynamic_bars))
 
     def test_rejects_scope_currency_duplicate_and_lineage_mismatches(self) -> None:
         scope, collection = _toss_collection()

@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import NoReturn
 from urllib.request import build_opener
 
+from rp001.toss_research_collector import RawHttpCapture
 from rp001_s2.archive_contract import CollectionScope
 from rp001_s2.intraday_boundary import StrictMinuteCandleTransport
 from rp001_s2.intraday_measurement import (
@@ -35,8 +36,13 @@ _SHARD_DURATION = timedelta(days=7)
 class IntradayRunError(ValueError):
     """Sanitized failure from a Toss intraday acquisition boundary."""
 
-    def __init__(self, code: str) -> None:
+    def __init__(
+        self,
+        code: str,
+        captures: tuple[RawHttpCapture, ...] = (),
+    ) -> None:
         self.code = code
+        self.captures = captures
         super().__init__(code)
 
 
@@ -106,7 +112,7 @@ def run_toss_minute_shard(
     request_pacer: Callable[[], None] | None = None,
 ) -> IntradayCandleCollection:
     """Authenticate ephemerally and exhaust one bounded Toss minute shard."""
-    adjusted = _validate_scope(scope)
+    adjusted = validate_toss_minute_scope(scope)
     credentials = load_credentials(environment)
     effective_opener = opener or build_opener(_RejectRedirectHandler())
     token = ""
@@ -136,12 +142,13 @@ def run_toss_minute_shard(
             page_limit=64,
         )
     except (ReadOnlyBoundaryError, MeasurementError) as error:
-        raise IntradayRunError(error.code) from None
+        raise IntradayRunError(error.code, captures=error.captures) from None
     finally:
         token = ""
 
 
-def _validate_scope(scope: CollectionScope) -> bool:
+def validate_toss_minute_scope(scope: CollectionScope) -> bool:
+    """Validate the Toss minute identity before credentials or network access."""
     if (
         not isinstance(scope, CollectionScope)
         or scope.provider != "toss"

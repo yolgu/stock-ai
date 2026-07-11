@@ -5,6 +5,7 @@ import json
 import os
 import tempfile
 import unittest
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -145,6 +146,7 @@ class TossIntradayRunTest(unittest.TestCase):
             start_at=datetime(2026, 7, 10, 13, 30, tzinfo=timezone.utc),
             end_at=datetime(2026, 7, 10, 13, 32, tzinfo=timezone.utc),
         )
+        shard = replace(shard, instrument_id="stable-instrument-id")
 
         result = run_toss_minute_shard(
             shard,
@@ -194,6 +196,36 @@ class TossIntradayRunTest(unittest.TestCase):
             )
 
         self.assertEqual(opener.requests, [])
+
+    def test_measurement_failure_preserves_safe_raw_captures(self) -> None:
+        opener = _QueueOpener(
+            (
+                _Response(b'{"access_token":"ephemeral-token"}'),
+                _Response(b'{"error":"temporarily unavailable"}', status=503),
+            )
+        )
+        environment = {
+            "TOSS_CLIENT_ID": "identifier",
+            "TOSS_CLIENT_SECRET": "private-value",
+        }
+        shard = _scope(
+            start_at=datetime(2026, 7, 10, 13, 30, tzinfo=timezone.utc),
+            end_at=datetime(2026, 7, 10, 13, 32, tzinfo=timezone.utc),
+        )
+
+        with self.assertRaises(IntradayRunError) as raised:
+            run_toss_minute_shard(
+                shard,
+                environment=environment,
+                opener=opener,
+                clock=lambda: datetime(2026, 7, 11, tzinfo=timezone.utc),
+                request_pacer=lambda: None,
+            )
+
+        self.assertEqual(raised.exception.code, "HTTP_STATUS")
+        self.assertEqual(len(raised.exception.captures), 1)
+        self.assertEqual(raised.exception.captures[0].status, 503)
+        self.assertNotIn("ephemeral-token", repr(raised.exception.captures))
 
 
 if __name__ == "__main__":

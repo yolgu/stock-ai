@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
@@ -24,6 +25,7 @@ _SESSION_TYPE = "provider_all_unclassified"
 _TOSS_NUMERIC_FIDELITY = "decimal_string_lexeme"
 _ALPACA_NUMERIC_FIDELITY = "json_number_lexeme"
 _TOSS_ADJUSTMENT_FLAGS = {"native": False, "adjusted": True}
+_KOREAN_SYMBOL_PATTERN = re.compile(r"^[0-9]{6}$")
 
 
 class MinuteCanonicalizationError(ValueError):
@@ -67,6 +69,8 @@ def canonicalize_alpaca_collection(
         raise MinuteCanonicalizationError("INVALID_INPUT")
     scope = collection.scope
     if not _valid_alpaca_scope(scope) or type(collection.rows) is not tuple:
+        raise MinuteCanonicalizationError("COLLECTION_SCOPE_MISMATCH")
+    if _expected_currency(scope.symbol) != "USD":
         raise MinuteCanonicalizationError("COLLECTION_SCOPE_MISMATCH")
     captures = _require_captures(collection.captures)
     tagged_rows: tuple[tuple[AlpacaMeasuredMinuteBar, str], ...] = tuple(
@@ -123,6 +127,7 @@ def _validate_toss_scope(
         or type(collection.audit_only_rows) is not tuple
     ):
         raise MinuteCanonicalizationError("COLLECTION_SCOPE_MISMATCH")
+    _expected_currency(scope.symbol)
 
 
 def _toss_analysis_quality(
@@ -180,7 +185,7 @@ def _canonicalize_rows(
         seen_events.add(event_start)
         capture = _capture_for(row, captures)
         _validate_lineage(row, captures, capture)
-        currency = _supported_currency(row.currency)
+        currency = _validated_currency(scope.symbol, row.currency)
         bar_end = _canonical_utc(row.bar_end)
         received = _canonical_utc(capture.received_at)
         if row.available_at != capture.received_at:
@@ -279,10 +284,19 @@ def _validate_lineage(
         raise MinuteCanonicalizationError("LINEAGE_INVALID")
 
 
-def _supported_currency(value: object) -> str:
-    if type(value) is not str or value not in _SESSION_TIMEZONES:
-        raise MinuteCanonicalizationError("UNSUPPORTED_CURRENCY")
-    return value
+def _expected_currency(symbol: str) -> str:
+    return (
+        "KRW"
+        if _KOREAN_SYMBOL_PATTERN.fullmatch(symbol) is not None
+        else "USD"
+    )
+
+
+def _validated_currency(symbol: str, value: object) -> str:
+    expected = _expected_currency(symbol)
+    if value != expected:
+        raise MinuteCanonicalizationError("COLLECTION_SCOPE_MISMATCH")
+    return expected
 
 
 def _canonical_utc(value: str) -> datetime:
