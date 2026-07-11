@@ -4,7 +4,7 @@ import math
 import unittest
 from dataclasses import replace
 
-from rp001_s2.direction_neutral_overheat import CompetitivePathLabel
+from rp001_s2.direction_neutral_overheat import CompetitivePathLabel, LabelHorizon
 from rp001_s2.overheat_oof import (
     CANDIDATE_MODEL_IDS,
     CLASS_ORDER,
@@ -17,6 +17,9 @@ from rp001_s2.overheat_oof import (
     run_competitive_path_development_oof,
     top_class_ece,
 )
+
+
+_HORIZON = LabelHorizon.MINUTES_30
 
 
 def _sessions(count: int = 126) -> tuple[str, ...]:
@@ -53,10 +56,12 @@ def _examples(
                 symbol="AAPL",
                 session_id=session_id,
                 sample_role="development",
+                horizon=_HORIZON,
                 label=label,
                 family_flags=_flags(index),
                 signed_return=(-1.0 if index % 2 else 1.0) * (0.001 + index / 100_000),
                 intrabar_log_range=0.002 + index / 100_000,
+                source_evidence_sha256=f"{index:064x}",
             )
         )
     return tuple(rows)
@@ -69,6 +74,7 @@ class CompetitivePathDevelopmentOOFTest(unittest.TestCase):
         result = run_competitive_path_development_oof(
             _examples(sessions),
             frozen_session_axis=sessions,
+            horizon=_HORIZON,
         )
 
         self.assertEqual(len(result.folds), 3)
@@ -89,6 +95,7 @@ class CompetitivePathDevelopmentOOFTest(unittest.TestCase):
             ),
         )
         self.assertEqual(result.class_order, CLASS_ORDER)
+        self.assertEqual(result.horizon, _HORIZON)
         self.assertEqual(result.model_ids, MODEL_IDS)
         self.assertEqual(result.candidate_model_ids, CANDIDATE_MODEL_IDS)
 
@@ -98,6 +105,7 @@ class CompetitivePathDevelopmentOOFTest(unittest.TestCase):
         result = run_competitive_path_development_oof(
             _examples(sessions),
             frozen_session_axis=sessions,
+            horizon=_HORIZON,
         )
 
         self.assertEqual(
@@ -113,6 +121,7 @@ class CompetitivePathDevelopmentOOFTest(unittest.TestCase):
         self.assertEqual(len(result.common_validation_row_ids), 58)
         self.assertNotIn("row-065", result.common_validation_row_ids)
         self.assertNotIn("row-090", result.common_validation_row_ids)
+        self.assertEqual(result.excluded_rows[0].source_evidence_sha256, f"{10:064x}")
 
         identities_by_model = {
             model_id: tuple(
@@ -127,6 +136,12 @@ class CompetitivePathDevelopmentOOFTest(unittest.TestCase):
             all(identities == reference for identities in identities_by_model.values())
         )
         self.assertEqual(len(reference), 58)
+        row_061 = next(
+            row
+            for row in result.predictions
+            if row.model_id == MODEL_IDS[0] and row.row_id == "row-061"
+        )
+        self.assertEqual(row_061.source_evidence_sha256, f"{61:064x}")
 
     def test_probabilities_and_multiclass_metrics_are_complete_and_finite(self) -> None:
         sessions = _sessions()
@@ -134,6 +149,7 @@ class CompetitivePathDevelopmentOOFTest(unittest.TestCase):
         result = run_competitive_path_development_oof(
             _examples(sessions),
             frozen_session_axis=sessions,
+            horizon=_HORIZON,
         )
 
         self.assertEqual(len(result.predictions), len(MODEL_IDS) * 58)
@@ -152,6 +168,10 @@ class CompetitivePathDevelopmentOOFTest(unittest.TestCase):
             self.assertGreaterEqual(metric.log_loss, 0.0)
             self.assertTrue(0.0 <= metric.top_class_ece <= 1.0)
         self.assertFalse(hasattr(result, "threshold"))
+        self.assertEqual(len(result.input_dataset_sha256), 64)
+        self.assertEqual(result.hyperparameters.seed, 20260711)
+        self.assertEqual(result.hyperparameters.softmax_initialization, "all_zero")
+        self.assertEqual(result.hyperparameters.randomness, "none")
 
     def test_c3_validation_values_do_not_refit_scaling_or_change_peer_prediction(self) -> None:
         sessions = _sessions()
@@ -159,6 +179,7 @@ class CompetitivePathDevelopmentOOFTest(unittest.TestCase):
         original = run_competitive_path_development_oof(
             examples,
             frozen_session_axis=sessions,
+            horizon=_HORIZON,
         )
         changed_row = replace(
             examples[70],
@@ -168,6 +189,7 @@ class CompetitivePathDevelopmentOOFTest(unittest.TestCase):
         repeated = run_competitive_path_development_oof(
             examples[:70] + (changed_row,) + examples[71:],
             frozen_session_axis=sessions,
+            horizon=_HORIZON,
         )
 
         original_peer = next(
@@ -204,10 +226,12 @@ class CompetitivePathDevelopmentOOFTest(unittest.TestCase):
         forward = run_competitive_path_development_oof(
             examples,
             frozen_session_axis=sessions,
+            horizon=_HORIZON,
         )
         reversed_input = run_competitive_path_development_oof(
             tuple(reversed(examples)),
             frozen_session_axis=sessions,
+            horizon=_HORIZON,
         )
 
         self.assertEqual(forward, reversed_input)
@@ -224,7 +248,51 @@ class CompetitivePathDevelopmentOOFTest(unittest.TestCase):
             run_competitive_path_development_oof(
                 _examples(short_axis, censored_indices=frozenset()),
                 frozen_session_axis=short_axis,
+                horizon=_HORIZON,
             )
+
+    def test_rejects_mixed_horizons_and_invalid_source_evidence_hash(self) -> None:
+        sessions = _sessions()
+        examples = _examples(sessions)
+        mixed = examples[:1] + (
+            replace(examples[1], horizon=LabelHorizon.MINUTES_120),
+        ) + examples[2:]
+
+        with self.assertRaisesRegex(ValueError, "mixed_label_horizons"):
+            run_competitive_path_development_oof(
+                mixed,
+                frozen_session_axis=sessions,
+                horizon=_HORIZON,
+            )
+        with self.assertRaisesRegex(ValueError, "source_evidence_sha256_invalid"):
+            replace(examples[0], source_evidence_sha256="not-a-sha256")
+
+    def test_input_dataset_hash_binds_labels_features_and_source_evidence(self) -> None:
+        sessions = _sessions()
+        examples = _examples(sessions)
+
+        def dataset_hash(rows: tuple[CompetitivePathExample, ...]) -> str:
+            return run_competitive_path_development_oof(
+                rows,
+                frozen_session_axis=sessions,
+                horizon=_HORIZON,
+            ).input_dataset_sha256
+
+        original = dataset_hash(examples)
+        changed_label = dataset_hash(
+            (replace(examples[0], label=CLASS_ORDER[1]),) + examples[1:]
+        )
+        changed_feature = dataset_hash(
+            (replace(examples[0], signed_return=examples[0].signed_return + 0.5),)
+            + examples[1:]
+        )
+        changed_source = dataset_hash(
+            (replace(examples[0], source_evidence_sha256="f" * 64),)
+            + examples[1:]
+        )
+
+        self.assertEqual(len(original), 64)
+        self.assertEqual(len({original, changed_label, changed_feature, changed_source}), 4)
 
 
 class MulticlassMetricTest(unittest.TestCase):

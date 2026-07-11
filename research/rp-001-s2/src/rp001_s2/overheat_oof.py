@@ -9,7 +9,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from types import MappingProxyType
 
-from rp001_s2.direction_neutral_overheat import CompetitivePathLabel
+from rp001_s2.direction_neutral_overheat import CompetitivePathLabel, LabelHorizon
 
 
 FAMILY_NAMES = (
@@ -44,6 +44,7 @@ _SOFTMAX_LEARNING_RATE = 0.05
 _SOFTMAX_L2 = 0.1
 _ECE_BINS = 10
 _PROBABILITY_FLOOR = 1e-15
+_FIXED_SEED = 20260711
 
 Predictor = Callable[["CompetitivePathExample"], tuple[float, ...]]
 
@@ -68,10 +69,12 @@ class CompetitivePathExample:
     symbol: str
     session_id: str
     sample_role: str
+    horizon: LabelHorizon
     label: CompetitivePathLabel
     family_flags: Mapping[str, FamilyThresholdFlags]
     signed_return: float
     intrabar_log_range: float
+    source_evidence_sha256: str
 
     def __post_init__(self) -> None:
         for value in (self.row_id, self.symbol, self.session_id):
@@ -79,6 +82,8 @@ class CompetitivePathExample:
                 raise ValueError("example_identity_invalid")
         if self.sample_role != "development":
             raise ValueError("development_sample_role_required")
+        if not isinstance(self.horizon, LabelHorizon):
+            raise ValueError("label_horizon_invalid")
         if not isinstance(self.label, CompetitivePathLabel):
             raise ValueError("competitive_path_label_invalid")
         if not isinstance(self.family_flags, Mapping):
@@ -93,6 +98,8 @@ class CompetitivePathExample:
             self.intrabar_log_range
         ) or float(self.intrabar_log_range) < 0.0:
             raise ValueError("example_feature_invalid")
+        if not _is_sha256(self.source_evidence_sha256):
+            raise ValueError("source_evidence_sha256_invalid")
         object.__setattr__(
             self,
             "family_flags",
@@ -133,6 +140,7 @@ class ExcludedOOFRow:
     session_id: str
     label: CompetitivePathLabel
     reason: str
+    source_evidence_sha256: str
 
 
 @dataclass(frozen=True)
@@ -143,6 +151,7 @@ class OOFProbabilityRow:
     symbol: str
     session_id: str
     label: CompetitivePathLabel
+    source_evidence_sha256: str
     probabilities: tuple[float, ...]
 
 
@@ -157,6 +166,9 @@ class OOFMetrics:
 
 @dataclass(frozen=True)
 class OOFHyperparameters:
+    seed: int = _FIXED_SEED
+    softmax_initialization: str = "all_zero"
+    randomness: str = "none"
     b2_shrinkage: float = _B2_SHRINKAGE
     softmax_iterations: int = _SOFTMAX_ITERATIONS
     softmax_learning_rate: float = _SOFTMAX_LEARNING_RATE
@@ -166,6 +178,7 @@ class OOFHyperparameters:
 
 @dataclass(frozen=True)
 class CompetitivePathDevelopmentOOF:
+    horizon: LabelHorizon
     class_order: tuple[CompetitivePathLabel, ...]
     model_ids: tuple[str, ...]
     candidate_model_ids: tuple[str, ...]
@@ -174,6 +187,7 @@ class CompetitivePathDevelopmentOOF:
     excluded_rows: tuple[ExcludedOOFRow, ...]
     common_validation_row_ids: tuple[str, ...]
     row_mask_sha256: str
+    input_dataset_sha256: str
     predictions: tuple[OOFProbabilityRow, ...]
     metrics: tuple[OOFMetrics, ...]
     hyperparameters: OOFHyperparameters
@@ -213,11 +227,14 @@ def run_competitive_path_development_oof(
     examples: Sequence[CompetitivePathExample],
     *,
     frozen_session_axis: Sequence[str],
+    horizon: LabelHorizon,
 ) -> CompetitivePathDevelopmentOOF:
     """Evaluate two baselines and three fixed candidates on one OOF row mask."""
+    if not isinstance(horizon, LabelHorizon):
+        raise ValueError("label_horizon_invalid")
     axis = _validate_session_axis(frozen_session_axis)
     axis_index = {session_id: index for index, session_id in enumerate(axis)}
-    rows = _validate_and_order_examples(tuple(examples), axis_index)
+    rows = _validate_and_order_examples(tuple(examples), axis_index, horizon)
     folds = _build_folds(len(axis))
     if len(folds) < _MINIMUM_FOLDS:
         raise ValueError("insufficient_development_folds")
@@ -229,6 +246,7 @@ def run_competitive_path_development_oof(
             session_id=row.session_id,
             label=row.label,
             reason="censored_or_not_identifiable",
+            source_evidence_sha256=row.source_evidence_sha256,
         )
         for row in rows
         if row.label is CompetitivePathLabel.CENSORED_OR_NOT_IDENTIFIABLE
@@ -260,6 +278,7 @@ def run_competitive_path_development_oof(
                         symbol=row.symbol,
                         session_id=row.session_id,
                         label=row.label,
+                        source_evidence_sha256=row.source_evidence_sha256,
                         probabilities=probabilities,
                     )
                 )
@@ -272,6 +291,7 @@ def run_competitive_path_development_oof(
         _metrics_for(model_id, prediction_tuple) for model_id in MODEL_IDS
     )
     return CompetitivePathDevelopmentOOF(
+        horizon=horizon,
         class_order=CLASS_ORDER,
         model_ids=MODEL_IDS,
         candidate_model_ids=CANDIDATE_MODEL_IDS,
@@ -279,7 +299,14 @@ def run_competitive_path_development_oof(
         folds=folds,
         excluded_rows=excluded,
         common_validation_row_ids=tuple(common_row_ids),
-        row_mask_sha256=_row_mask_sha256(axis, folds, common_identity, excluded),
+        row_mask_sha256=_row_mask_sha256(
+            axis,
+            horizon,
+            folds,
+            common_identity,
+            excluded,
+        ),
+        input_dataset_sha256=_input_dataset_sha256(axis, horizon, rows),
         predictions=prediction_tuple,
         metrics=metrics,
         hyperparameters=OOFHyperparameters(),
@@ -560,6 +587,7 @@ def _validate_session_axis(values: Sequence[str]) -> tuple[str, ...]:
 def _validate_and_order_examples(
     rows: tuple[CompetitivePathExample, ...],
     axis_index: Mapping[str, int],
+    horizon: LabelHorizon,
 ) -> tuple[CompetitivePathExample, ...]:
     if not rows or any(not isinstance(row, CompetitivePathExample) for row in rows):
         raise ValueError("competitive_path_examples_required")
@@ -567,6 +595,8 @@ def _validate_and_order_examples(
         raise ValueError("duplicate_competitive_path_row_id")
     if any(row.session_id not in axis_index for row in rows):
         raise ValueError("example_session_outside_frozen_axis")
+    if any(row.horizon is not horizon for row in rows):
+        raise ValueError("mixed_label_horizons")
     return tuple(sorted(rows, key=lambda row: (axis_index[row.session_id], row.row_id)))
 
 
@@ -660,6 +690,7 @@ def _validate_probability_vector(
 
 def _row_mask_sha256(
     axis: tuple[str, ...],
+    horizon: LabelHorizon,
     folds: tuple[DevelopmentFold, ...],
     identities: tuple[tuple[str, str], ...],
     excluded: tuple[ExcludedOOFRow, ...],
@@ -667,6 +698,7 @@ def _row_mask_sha256(
     body = json.dumps(
         {
             "axis": axis,
+            "horizon": horizon.value,
             "excluded": tuple((row.row_id, row.reason) for row in excluded),
             "folds": tuple(
                 (
@@ -688,5 +720,53 @@ def _row_mask_sha256(
     return hashlib.sha256(body).hexdigest()
 
 
+def _input_dataset_sha256(
+    axis: tuple[str, ...],
+    horizon: LabelHorizon,
+    rows: tuple[CompetitivePathExample, ...],
+) -> str:
+    body = json.dumps(
+        {
+            "axis": axis,
+            "horizon": horizon.value,
+            "rows": tuple(
+                {
+                    "familyFlags": tuple(
+                        (
+                            family,
+                            row.family_flags[family].exceeds_p99,
+                            row.family_flags[family].exceeds_p999,
+                        )
+                        for family in FAMILY_NAMES
+                    ),
+                    "horizon": row.horizon.value,
+                    "intrabarLogRangeHex": float(row.intrabar_log_range).hex(),
+                    "label": row.label.value,
+                    "rowId": row.row_id,
+                    "sampleRole": row.sample_role,
+                    "sessionId": row.session_id,
+                    "signedReturnHex": float(row.signed_return).hex(),
+                    "sourceEvidenceSha256": row.source_evidence_sha256,
+                    "symbol": row.symbol,
+                }
+                for row in rows
+            ),
+            "schemaVersion": "rp001-s2-competitive-path-oof-input.v1",
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(body).hexdigest()
+
+
 def _finite(value: object) -> bool:
     return type(value) in (int, float) and math.isfinite(float(value))
+
+
+def _is_sha256(value: object) -> bool:
+    return (
+        type(value) is str
+        and len(value) == 64
+        and all(character in "0123456789abcdef" for character in value)
+    )
