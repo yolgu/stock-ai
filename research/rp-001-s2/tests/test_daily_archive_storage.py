@@ -199,6 +199,34 @@ class ImmutableDailyArchiveStorageTest(unittest.TestCase):
                 ):
                     storage.verify_archive(stored)
 
+    def test_failure_evidence_preserves_safe_raw_capture_idempotently(self) -> None:
+        capture, raw_body = _capture()
+        with tempfile.TemporaryDirectory() as directory:
+            storage = ImmutableDailyArchiveStorage(
+                Path(directory),
+                free_bytes=lambda _path: _FREE_BYTES,
+            )
+
+            first = storage.write_failure_evidence(
+                scope=_scope(),
+                captures=(capture,),
+                error_code="HTTP_STATUS",
+            )
+            second = storage.write_failure_evidence(
+                scope=_scope(),
+                captures=(capture,),
+                error_code="HTTP_STATUS",
+            )
+
+            self.assertEqual(first, second)
+            self.assertEqual(
+                zstandard.ZstdDecompressor().decompress(
+                    first.raw_paths[0].read_bytes()
+                ),
+                raw_body,
+            )
+            storage.verify_failure_evidence(first)
+
 
 if __name__ == "__main__":
     unittest.main()
