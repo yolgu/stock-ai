@@ -57,6 +57,20 @@ FOUNDATION_IMMUTABLE_PATHS = (
 PREDECESSOR_LEDGER_PATH = Path(
     "research/rp-001/local-ledgers/interim-program"
 )
+PROGRAM_COMPLETION_EVENT_PATH = (
+    PREDECESSOR_LEDGER_PATH / "events/000019.json"
+)
+
+
+def _remove_terminal_completion_state(fixture_root: Path) -> None:
+    terminal_body_paths = (
+        *EXPECTED_ARTIFACT_PATHS,
+        PROGRAM_COMPLETION_EVENT_PATH,
+    )
+    for relative_path in terminal_body_paths:
+        body_path = fixture_root / relative_path
+        body_path.unlink(missing_ok=True)
+        Path(f"{body_path}.sha256").unlink(missing_ok=True)
 
 
 class _FailingTransaction:
@@ -533,6 +547,7 @@ class ProgramCompletionPublicationTest(unittest.TestCase):
         destination_ledger = self.publication_root / PREDECESSOR_LEDGER_PATH
         destination_ledger.parent.mkdir(parents=True, exist_ok=True)
         shutil.copytree(source_ledger, destination_ledger)
+        _remove_terminal_completion_state(self.publication_root)
 
     def test_finalize_publishes_detached_hashes_then_appends_one_event(self) -> None:
         summary = self.service.finalize(COMPLETED_AT)
@@ -548,8 +563,9 @@ class ProgramCompletionPublicationTest(unittest.TestCase):
             )
         event_path = (
             self.publication_root
-            / "research/rp-001/local-ledgers/interim-program/events/000019.json"
+            / PROGRAM_COMPLETION_EVENT_PATH
         )
+        self.assertTrue(event_path.is_file())
         event = json.loads(event_path.read_text(encoding="utf-8"))
         self.assertEqual("rp001_program_completed_no_adoptable_formula", event["eventType"])
         self.assertEqual("PC-001", event["payload"]["completionId"])
@@ -715,6 +731,7 @@ class ProgramCompletionPublicationTest(unittest.TestCase):
             destination_ledger = external / PREDECESSOR_LEDGER_PATH
             destination_ledger.parent.mkdir(parents=True)
             shutil.copytree(source_ledger, destination_ledger)
+            _remove_terminal_completion_state(external)
             with self.assertRaises(ProgramCompletionError):
                 ProgramCompletionService(
                     REPOSITORY_ROOT,
@@ -745,6 +762,7 @@ class ProgramCompletionImmutableInputTest(unittest.TestCase):
                 REPOSITORY_ROOT / "research/rp-001",
                 outside / "research/rp-001",
             )
+            _remove_terminal_completion_state(outside)
             repository_alias = root / "repository-alias"
             repository_alias.symlink_to(outside, target_is_directory=True)
 
@@ -777,6 +795,7 @@ class ProgramCompletionImmutableInputTest(unittest.TestCase):
                 REPOSITORY_ROOT / "research/rp-001",
                 repository_copy / "research/rp-001",
             )
+            _remove_terminal_completion_state(repository_copy)
             contract_path = repository_copy / (
                 "research/rp-001/contracts/"
                 "interim-formula-contract-v1.0.1.json"
@@ -812,6 +831,7 @@ class ProgramCompletionImmutableInputTest(unittest.TestCase):
                 REPOSITORY_ROOT / "research/rp-001",
                 repository_copy / "research/rp-001",
             )
+            _remove_terminal_completion_state(repository_copy)
             sidecar_path = repository_copy / (
                 "research/rp-001/contracts/"
                 "interim-formula-contract-v1.0.1.json.sha256"
@@ -837,6 +857,7 @@ class ProgramCompletionImmutableInputTest(unittest.TestCase):
                 REPOSITORY_ROOT / "research/rp-001",
                 repository_copy / "research/rp-001",
             )
+            _remove_terminal_completion_state(repository_copy)
             contract_path = (
                 repository_copy
                 / "research/rp-001/contracts/interim-formula-contract-v1.0.1.json"
