@@ -376,6 +376,7 @@ def _resume_or_collect(
     pacer: Callable[[], None],
     canonicalizer: Canonicalizer,
 ) -> TossDailyScopeTerminal:
+    captures: tuple[RawHttpCapture, ...] = ()
     try:
         _validate_scope(scope)
         existing = storage.find_verified_archive(scope)
@@ -394,6 +395,7 @@ def _resume_or_collect(
                 failure_evidence=None,
             )
         collection = session.collect(scope, pacer)
+        captures = collection.captures
         rows = canonicalizer(scope, collection)
         completion = _completion(scope, collection, rows)
         archive = storage.write_archive(
@@ -414,14 +416,20 @@ def _resume_or_collect(
             failure_evidence=None,
         )
     except TossDailyRunError as error:
-        return _failure_terminal(scope_index, scope, storage, error.code, error.captures)
+        return _failure_terminal(
+            scope_index,
+            scope,
+            storage,
+            error.code,
+            error.captures or captures,
+        )
     except DailyCanonicalizationError as error:
         return _failure_terminal(
             scope_index,
             scope,
             storage,
             error.code,
-            (),
+            captures,
             status=DailyBatchScopeStatus.INVALID,
         )
     except DailyArchiveStorageError as error:
@@ -435,7 +443,7 @@ def _resume_or_collect(
             scope,
             storage,
             error.code,
-            (),
+            captures,
             status=status,
         )
     except Exception:
@@ -444,7 +452,7 @@ def _resume_or_collect(
             scope,
             storage,
             "unexpected_failure",
-            (),
+            captures,
         )
 
 

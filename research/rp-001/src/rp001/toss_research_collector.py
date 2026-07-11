@@ -355,9 +355,6 @@ class TossResearchCollector:
                     timestamp_text_by_session,
                     received.capture,
                 )
-                if new_row_count == 0:
-                    raise CollectorError("NO_PAGINATION_PROGRESS", received.capture)
-
                 next_before = page.next_before
                 if next_before is not None and next_before in seen_cursors:
                     raise CollectorError("REPEATED_CURSOR", received.capture)
@@ -367,6 +364,8 @@ class TossResearchCollector:
                 )
                 if next_before is None or crossed_requested_start:
                     break
+                if new_row_count == 0:
+                    raise CollectorError("NO_PAGINATION_PROGRESS", received.capture)
                 if page_number == _CANDLE_PAGE_LIMIT:
                     raise CollectorError("PAGE_LIMIT_EXCEEDED", received.capture)
 
