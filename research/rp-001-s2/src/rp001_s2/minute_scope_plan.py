@@ -6,18 +6,47 @@ import hashlib
 import json
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from enum import Enum
 
 from rp001_s2.archive_contract import CollectionScope, SampleRole
 
 
-_SCHEMA_VERSION = "rp001-s2-toss-minute-scope-plan.v1"
 _IDENTITY_DOMAIN = "rp001_s2.toss_minute_scope_plan"
-_SHARD_DURATION = timedelta(days=7)
 _ADJUSTMENT_MODES = ("native", "adjusted")
+
+
+class TossMinutePlanVersion(str, Enum):
+    LEGACY_SEVEN_DAY_V1 = "legacy_seven_day_v1"
+    PROVIDER_DATE_DAILY_V2 = "provider_date_daily_v2"
+
+    @property
+    def schema_version(self) -> str:
+        return (
+            "rp001-s2-toss-minute-scope-plan.v1"
+            if self is TossMinutePlanVersion.LEGACY_SEVEN_DAY_V1
+            else "rp001-s2-toss-minute-scope-plan.v2"
+        )
+
+    @property
+    def feed(self) -> str:
+        return (
+            "provider_all"
+            if self is TossMinutePlanVersion.LEGACY_SEVEN_DAY_V1
+            else "provider_date_daily_v2"
+        )
+
+    @property
+    def shard_duration(self) -> timedelta:
+        return timedelta(
+            days=7
+            if self is TossMinutePlanVersion.LEGACY_SEVEN_DAY_V1
+            else 1
+        )
 
 
 @dataclass(frozen=True)
 class TossMinuteScopePlan:
+    contract_version: TossMinutePlanVersion
     instruments: tuple[tuple[str, str], ...]
     start_at: datetime
     end_at: datetime
@@ -36,8 +65,10 @@ class TossMinuteScopePlan:
 
     def collection_identity_body(self) -> dict[str, object]:
         return {
-            "schemaVersion": _SCHEMA_VERSION,
+            "schemaVersion": self.contract_version.schema_version,
             "identityDomain": _IDENTITY_DOMAIN,
+            "contractVersion": self.contract_version.value,
+            "feed": self.contract_version.feed,
             "instrumentMasterSha256": self.instrument_master_sha256,
             "instruments": [
                 {"instrumentId": instrument_id, "symbol": symbol}
@@ -46,7 +77,15 @@ class TossMinuteScopePlan:
             "startAt": _format_utc(self.start_at),
             "endAt": _format_utc(self.end_at),
             "adjustmentModes": list(self.adjustment_modes),
-            "shardDurationDays": 7,
+            "shardDurationSeconds": int(
+                self.contract_version.shard_duration.total_seconds()
+            ),
+            "initialBeforeRule": (
+                "scope_end"
+                if self.contract_version
+                is TossMinutePlanVersion.LEGACY_SEVEN_DAY_V1
+                else "scope_end_minus_one_minute"
+            ),
             "scopeAcquisitionKeys": [
                 scope.acquisition_key for scope in self.scopes
             ],
@@ -78,6 +117,9 @@ def build_toss_minute_scope_plan(
     end_at: datetime,
     instrument_master_sha256: str,
     sample_role: SampleRole,
+    contract_version: TossMinutePlanVersion = (
+        TossMinutePlanVersion.PROVIDER_DATE_DAILY_V2
+    ),
 ) -> TossMinuteScopePlan:
     """Cover the frozen interval exactly, newest shard first, for every identity."""
     normalized = _validate_instruments(instruments)
@@ -87,13 +129,22 @@ def build_toss_minute_scope_plan(
         or start_at >= end_at
         or not _is_sha256(instrument_master_sha256)
         or not isinstance(sample_role, SampleRole)
+        or not isinstance(contract_version, TossMinutePlanVersion)
+        or (
+            contract_version is TossMinutePlanVersion.PROVIDER_DATE_DAILY_V2
+            and (not _is_utc_midnight(start_at) or not _is_utc_midnight(end_at))
+        )
     ):
         raise ValueError("minute_scope_plan_invalid")
-    windows = _reverse_chronological_windows(start_at, end_at)
+    windows = _reverse_chronological_windows(
+        start_at,
+        end_at,
+        contract_version.shard_duration,
+    )
     scopes = tuple(
         CollectionScope(
             provider="toss",
-            feed="provider_all",
+            feed=contract_version.feed,
             instrument_id=instrument_id,
             symbol=symbol,
             interval="1m",
@@ -108,6 +159,7 @@ def build_toss_minute_scope_plan(
         for window_start, window_end in windows
     )
     return TossMinuteScopePlan(
+        contract_version=contract_version,
         instruments=normalized,
         start_at=start_at,
         end_at=end_at,
@@ -150,11 +202,12 @@ def _validate_instruments(
 def _reverse_chronological_windows(
     start_at: datetime,
     end_at: datetime,
+    shard_duration: timedelta,
 ) -> tuple[tuple[datetime, datetime], ...]:
     chronological: list[tuple[datetime, datetime]] = []
     cursor = start_at
     while cursor < end_at:
-        shard_end = min(cursor + _SHARD_DURATION, end_at)
+        shard_end = min(cursor + shard_duration, end_at)
         chronological.append((cursor, shard_end))
         cursor = shard_end
     return tuple(reversed(chronological))
@@ -188,3 +241,7 @@ def _is_sha256(value: object) -> bool:
         and len(value) == 64
         and all(character in "0123456789abcdef" for character in value)
     )
+
+
+def _is_utc_midnight(value: datetime) -> bool:
+    return value.hour == value.minute == value.second == value.microsecond == 0

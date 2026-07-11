@@ -4,7 +4,10 @@ import unittest
 from datetime import datetime, timedelta, timezone
 
 from rp001_s2.archive_contract import SampleRole
-from rp001_s2.minute_scope_plan import build_toss_minute_scope_plan
+from rp001_s2.minute_scope_plan import (
+    TossMinutePlanVersion,
+    build_toss_minute_scope_plan,
+)
 
 
 class TossMinuteScopePlanTest(unittest.TestCase):
@@ -21,7 +24,11 @@ class TossMinuteScopePlanTest(unittest.TestCase):
         )
 
         self.assertEqual(plan.instrument_count, 2)
-        self.assertEqual(plan.scope_count, 12)
+        self.assertEqual(plan.scope_count, 76)
+        self.assertEqual(
+            plan.contract_version,
+            TossMinutePlanVersion.PROVIDER_DATE_DAILY_V2,
+        )
         self.assertEqual(plan.adjustment_modes, ("native", "adjusted"))
         for instrument_id, symbol in (("US-AAPL", "AAPL"), ("US-SPY", "SPY")):
             for mode in plan.adjustment_modes:
@@ -48,7 +55,13 @@ class TossMinuteScopePlanTest(unittest.TestCase):
                 )
                 self.assertTrue(
                     all(
-                        scope.end_at - scope.start_at <= timedelta(days=7)
+                        scope.end_at - scope.start_at == timedelta(days=1)
+                        for scope in chronological
+                    )
+                )
+                self.assertTrue(
+                    all(
+                        scope.feed == "provider_date_daily_v2"
                         for scope in chronological
                     )
                 )
@@ -61,6 +74,33 @@ class TossMinuteScopePlanTest(unittest.TestCase):
                         )
                     ),
                 )
+
+    def test_legacy_seven_day_plan_remains_reproducible_but_has_a_distinct_identity(self) -> None:
+        arguments = {
+            "instruments": (("US-AAPL", "AAPL"),),
+            "start_at": datetime(2026, 6, 1, tzinfo=timezone.utc),
+            "end_at": datetime(2026, 6, 20, tzinfo=timezone.utc),
+            "instrument_master_sha256": "c" * 64,
+            "sample_role": SampleRole.SEEN,
+        }
+
+        legacy = build_toss_minute_scope_plan(
+            **arguments,
+            contract_version=TossMinutePlanVersion.LEGACY_SEVEN_DAY_V1,
+        )
+        corrected = build_toss_minute_scope_plan(**arguments)
+
+        self.assertEqual(legacy.scope_count, 6)
+        self.assertTrue(all(scope.feed == "provider_all" for scope in legacy.scopes))
+        self.assertNotEqual(
+            legacy.collection_identity_sha256,
+            corrected.collection_identity_sha256,
+        )
+        self.assertTrue(
+            set(scope.acquisition_key for scope in legacy.scopes).isdisjoint(
+                scope.acquisition_key for scope in corrected.scopes
+            )
+        )
 
     def test_seen_unseen_changes_no_acquisition_identity_or_collection_coverage(self) -> None:
         arguments = {
