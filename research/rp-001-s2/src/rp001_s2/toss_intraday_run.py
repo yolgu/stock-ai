@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 import os
 import stat
+import threading
+import time
 from collections.abc import Callable, MutableMapping
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
@@ -26,6 +28,7 @@ from rp001_s2.intraday_measurement import (
 )
 from rp001_s2.toss_boundary import (
     ReadOnlyBoundaryError,
+    TossCredentials,
     _Opener,
     _RejectRedirectHandler,
     _authenticate,
@@ -35,6 +38,7 @@ from rp001_s2.toss_boundary import (
 
 _MAX_CREDENTIAL_FILE_BYTES = 64 * 1024
 _SHARD_DURATION = timedelta(days=7)
+_TOKEN_REFRESH_AGE_SECONDS = 300.0
 
 
 class IntradayRunError(ValueError):
@@ -54,6 +58,66 @@ class _DuplicateCredentialKey(ValueError):
     pass
 
 
+class RefreshingTokenSupplier:
+    """Keep exactly one active token and rotate it inside one session."""
+
+    def __init__(
+        self,
+        *,
+        initial_token: str,
+        refresh: Callable[[], str],
+        monotonic: Callable[[], float] = time.monotonic,
+        maximum_age_seconds: float = _TOKEN_REFRESH_AGE_SECONDS,
+    ) -> None:
+        if (
+            not _valid_secret(initial_token)
+            or not callable(refresh)
+            or not callable(monotonic)
+            or not isinstance(maximum_age_seconds, (int, float))
+            or isinstance(maximum_age_seconds, bool)
+            or maximum_age_seconds <= 0
+        ):
+            raise IntradayRunError("session_invalid")
+        self._token = initial_token
+        self._refresh = refresh
+        self._monotonic = monotonic
+        self._maximum_age_seconds = float(maximum_age_seconds)
+        self._issued_at = monotonic()
+        self._closed = False
+        self._lock = threading.Lock()
+
+    def __repr__(self) -> str:
+        return "RefreshingTokenSupplier(<redacted>)"
+
+    @property
+    def is_closed(self) -> bool:
+        return self._closed
+
+    def __call__(self) -> str:
+        with self._lock:
+            if self._closed:
+                raise IntradayRunError("session_closed")
+            now = self._monotonic()
+            if now - self._issued_at >= self._maximum_age_seconds:
+                try:
+                    token = self._refresh()
+                except IntradayRunError:
+                    raise
+                except Exception:
+                    raise IntradayRunError("authentication_refresh_failed") from None
+                if not _valid_secret(token):
+                    raise IntradayRunError("authentication_refresh_failed")
+                self._token = token
+                self._issued_at = self._monotonic()
+            return self._token
+
+    def close(self) -> None:
+        with self._lock:
+            self._token = ""
+            self._refresh = _closed_token_refresh
+            self._closed = True
+
+
 class TossMinuteSession:
     """Reuse one ephemeral Toss token across a bounded minute batch."""
 
@@ -61,13 +125,13 @@ class TossMinuteSession:
         self,
         *,
         opener: _Opener,
-        token: str,
+        token_supplier: RefreshingTokenSupplier,
         clock: Callable[[], datetime],
     ) -> None:
-        if not token or any(character in token for character in "\r\n\x00"):
+        if not isinstance(token_supplier, RefreshingTokenSupplier):
             raise IntradayRunError("session_invalid")
         self._opener = opener
-        self._token = token
+        self._token_supplier = token_supplier
         self._clock = clock
 
     def __repr__(self) -> str:
@@ -79,7 +143,7 @@ class TossMinuteSession:
         *,
         request_pacer: Callable[[], None] | None = None,
     ) -> IntradayCandleCollection:
-        if not self._token:
+        if self._token_supplier.is_closed:
             raise IntradayRunError("session_closed")
         adjusted = validate_toss_minute_scope(scope)
         initial_before = _format_utc(_initial_before(scope))
@@ -93,7 +157,7 @@ class TossMinuteSession:
             )
             collector = IntradayMeasurementCollector(
                 transport=transport,
-                token_supplier=lambda: self._token,
+                token_supplier=self._token_supplier,
                 clock=self._clock,
             )
             return collector.collect_candles(
@@ -110,7 +174,7 @@ class TossMinuteSession:
             raise IntradayRunError(error.code, captures=error.captures) from None
 
     def close(self) -> None:
-        self._token = ""
+        self._token_supplier.close()
 
 
 def load_secure_toss_environment(path: Path) -> dict[str, str]:
@@ -160,15 +224,25 @@ def open_toss_minute_session(
     environment: MutableMapping[str, str],
     clock: Callable[[], datetime],
     opener: _Opener | None = None,
+    token_monotonic: Callable[[], float] = time.monotonic,
 ) -> TossMinuteSession:
     """Authenticate once and return a redacted, explicitly closable session."""
     credentials = load_credentials(environment)
     effective_opener = opener or build_opener(_RejectRedirectHandler())
     try:
         token = _authenticate(effective_opener, credentials, clock)
+        token_supplier = RefreshingTokenSupplier(
+            initial_token=token,
+            refresh=lambda: _refresh_token(
+                effective_opener,
+                credentials,
+                clock,
+            ),
+            monotonic=token_monotonic,
+        )
         return TossMinuteSession(
             opener=effective_opener,
-            token=token,
+            token_supplier=token_supplier,
             clock=clock,
         )
     except ReadOnlyBoundaryError as error:
@@ -257,6 +331,21 @@ def _valid_secret(value: object) -> bool:
         and bool(value)
         and not any(character in value for character in "\r\n\x00")
     )
+
+
+def _refresh_token(
+    opener: _Opener,
+    credentials: TossCredentials,
+    clock: Callable[[], datetime],
+) -> str:
+    try:
+        return _authenticate(opener, credentials, clock)
+    except ReadOnlyBoundaryError as error:
+        raise IntradayRunError(error.code, captures=error.captures) from None
+
+
+def _closed_token_refresh() -> str:
+    raise IntradayRunError("session_closed")
 
 
 def _format_utc(value: datetime) -> str:
