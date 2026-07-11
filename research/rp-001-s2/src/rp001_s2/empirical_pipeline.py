@@ -40,6 +40,7 @@ from rp001_s2.overheat_features import (
 from rp001_s2.overheat_oof import (
     FAMILY_NAMES,
     CompetitivePathExample,
+    ExcludedOOFRow,
     FamilyThresholdFlags,
 )
 
@@ -131,6 +132,10 @@ class DirectionNeutralDatasetAnalysis:
     def excluded_episode_count(self) -> int:
         return len(self.excluded_episodes)
 
+    @property
+    def oof_upstream_exclusions(self) -> tuple[ExcludedOOFRow, ...]:
+        return _oof_exclusions(self.excluded_episodes)
+
 
 @dataclass(frozen=True)
 class DirectionNeutralEmpiricalResult:
@@ -150,24 +155,25 @@ class DirectionNeutralEmpiricalResult:
     def excluded_episode_count(self) -> int:
         return len(self.excluded_episodes)
 
+    @property
+    def oof_upstream_exclusions(self) -> tuple[ExcludedOOFRow, ...]:
+        return _oof_exclusions(self.excluded_episodes)
+
 
 @dataclass(frozen=True)
 class _CoverageMarketContract:
     timezone: ZoneInfo
     open_time: time
-    maximum_regular_minutes: int
 
 
 _COVERAGE_MARKETS = {
     FeatureMarket.US_REGULAR: _CoverageMarketContract(
         timezone=ZoneInfo("America/New_York"),
         open_time=time(9, 30),
-        maximum_regular_minutes=390,
     ),
     FeatureMarket.KR_REGULAR: _CoverageMarketContract(
         timezone=ZoneInfo("Asia/Seoul"),
         open_time=time(9, 0),
-        maximum_regular_minutes=390,
     ),
 }
 
@@ -201,7 +207,7 @@ def run_direction_neutral_empirical_pipeline(
         scopes=benchmark_scope_values,
     )
     if not target.bars or not benchmark.bars:
-        raise EmpiricalPipelineError("insufficient_complete_daily_archives")
+        raise EmpiricalPipelineError("insufficient_loadable_daily_archives")
     if (
         target.provider != benchmark.provider
         or target.feed != benchmark.feed
@@ -217,15 +223,16 @@ def run_direction_neutral_empirical_pipeline(
     )
     if not coverage.included_sessions:
         raise EmpiricalPipelineError("no_common_complete_feature_sessions")
-    included_dates = {
-        session.session_date for session in coverage.included_sessions
-    }
     try:
         dataset = build_direction_neutral_features(
-            symbol_bars=_bars_for_sessions(target, included_dates, market),
+            symbol_bars=_bars_for_sessions(
+                target,
+                coverage.included_sessions,
+                market,
+            ),
             benchmark_bars=_bars_for_sessions(
                 benchmark,
-                included_dates,
+                coverage.included_sessions,
                 market,
             ),
             market=market,
@@ -500,8 +507,19 @@ def _common_session_coverage(
     market: FeatureMarket,
 ) -> CommonSessionCoverageLedger:
     contract = _COVERAGE_MARKETS[market]
-    target_offsets = _regular_offsets_by_date(target.bars, contract)
-    benchmark_offsets = _regular_offsets_by_date(benchmark.bars, contract)
+    regular_minutes = {
+        session.session_date: session.regular_minutes for session in sessions
+    }
+    target_offsets = _regular_offsets_by_date(
+        target.bars,
+        contract,
+        regular_minutes,
+    )
+    benchmark_offsets = _regular_offsets_by_date(
+        benchmark.bars,
+        contract,
+        regular_minutes,
+    )
     entries: list[CommonSessionCoverageEntry] = []
     for session in sessions:
         target_audit = _series_session_coverage(
@@ -611,6 +629,7 @@ def _series_session_coverage(
 def _regular_offsets_by_date(
     bars: tuple[CanonicalMinuteBar, ...],
     contract: _CoverageMarketContract,
+    regular_minutes_by_date: dict[date, int],
 ) -> dict[date, tuple[int, ...]]:
     grouped: dict[date, list[int]] = {}
     open_minute = contract.open_time.hour * 60 + contract.open_time.minute
@@ -618,8 +637,11 @@ def _regular_offsets_by_date(
         if bar.quality_status != "verified_completed":
             continue
         local = _event_start(bar).astimezone(contract.timezone)
+        regular_minutes = regular_minutes_by_date.get(local.date())
+        if regular_minutes is None:
+            continue
         offset = local.hour * 60 + local.minute - open_minute
-        if 0 <= offset < contract.maximum_regular_minutes:
+        if 0 <= offset < regular_minutes:
             grouped.setdefault(local.date(), []).append(offset)
     return {
         session_date: tuple(sorted(offsets))
@@ -629,15 +651,43 @@ def _regular_offsets_by_date(
 
 def _bars_for_sessions(
     series: VerifiedDailySeries,
-    included_dates: set[date],
+    included_sessions: tuple[FeatureSession, ...],
     market: FeatureMarket,
 ) -> tuple[CanonicalMinuteBar, ...]:
-    timezone_contract = _COVERAGE_MARKETS[market].timezone
+    contract = _COVERAGE_MARKETS[market]
+    regular_minutes = {
+        session.session_date: session.regular_minutes
+        for session in included_sessions
+    }
+    open_minute = contract.open_time.hour * 60 + contract.open_time.minute
+    selected: list[CanonicalMinuteBar] = []
+    for bar in series.bars:
+        if bar.quality_status != "verified_completed":
+            continue
+        local = _event_start(bar).astimezone(contract.timezone)
+        session_minutes = regular_minutes.get(local.date())
+        if session_minutes is None:
+            continue
+        offset = local.hour * 60 + local.minute - open_minute
+        if 0 <= offset < session_minutes:
+            selected.append(bar)
+    return tuple(selected)
+
+
+def _oof_exclusions(
+    excluded_episodes: tuple[ExcludedEpisode, ...],
+) -> tuple[ExcludedOOFRow, ...]:
     return tuple(
-        bar
-        for bar in series.bars
-        if _event_start(bar).astimezone(timezone_contract).date()
-        in included_dates
+        ExcludedOOFRow(
+            row_id=episode.row_id,
+            symbol=episode.symbol,
+            session_id=episode.session_id,
+            horizon=episode.horizon,
+            label=episode.label,
+            reason=episode.reason.value,
+            source_evidence_sha256=episode.source_evidence_sha256,
+        )
+        for episode in excluded_episodes
     )
 
 

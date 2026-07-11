@@ -31,6 +31,7 @@ from rp001_s2.direction_neutral_overheat import (
 from rp001_s2.empirical_archive_loader import DailyScopeLedgerStatus
 from rp001_s2.empirical_pipeline import (
     ExcludedEpisodeReason,
+    EmpiricalPipelineError,
     analyze_direction_neutral_dataset,
     run_direction_neutral_empirical_pipeline,
 )
@@ -39,7 +40,7 @@ from rp001_s2.overheat_features import (
     FeatureMarket,
     FeatureSession,
 )
-from rp001_s2.overheat_oof import FAMILY_NAMES
+from rp001_s2.overheat_oof import ExcludedOOFRow, FAMILY_NAMES
 
 
 _AVAILABLE_BYTES = 60 * 1024**3
@@ -61,11 +62,28 @@ def _scope(symbol: str, day: int) -> CollectionScope:
     )
 
 
+def _full_day_scope(symbol: str, day: int) -> CollectionScope:
+    start = datetime(2026, 7, day, tzinfo=timezone.utc)
+    return CollectionScope(
+        provider="toss",
+        feed=TOSS_PROVIDER_DATE_DAILY_FEED,
+        instrument_id=symbol,
+        symbol=symbol,
+        interval="1m",
+        start_at=start,
+        end_at=start + timedelta(days=1),
+        adjustment_mode="native",
+        session_scope="provider_all",
+        sample_role=SampleRole.SEEN,
+    )
+
+
 def _write_two_minute_archive(
     root: Path,
     scope: CollectionScope,
     *,
     minute_count: int = 2,
+    first_event_at: datetime | None = None,
 ) -> None:
     body = json.dumps({"symbol": scope.symbol}).encode("utf-8")
     received_at = (scope.end_at + timedelta(minutes=1)).isoformat().replace(
@@ -88,7 +106,8 @@ def _write_two_minute_archive(
     rows: list[CanonicalMinuteBar] = []
     for minute in range(minute_count):
         close = f"{100.1 + minute / 10:.1f}"
-        event = scope.start_at + timedelta(minutes=minute)
+        event = (first_event_at or scope.start_at) + timedelta(minutes=minute)
+        close_value = float(close)
         rows.append(
             CanonicalMinuteBar(
                 provider=scope.provider,
@@ -108,9 +127,15 @@ def _write_two_minute_archive(
                 adjustment_mode="native",
                 numeric_fidelity="decimal_string_lexeme",
                 quality_status="verified_completed",
-                open_price=CanonicalScalar("json_string", "100.0"),
-                high_price=CanonicalScalar("json_string", "100.4"),
-                low_price=CanonicalScalar("json_string", "99.8"),
+                open_price=CanonicalScalar(
+                    "json_string", f"{close_value - 0.1:.1f}"
+                ),
+                high_price=CanonicalScalar(
+                    "json_string", f"{close_value + 0.2:.1f}"
+                ),
+                low_price=CanonicalScalar(
+                    "json_string", f"{close_value - 0.2:.1f}"
+                ),
                 close_price=CanonicalScalar("json_string", close),
                 volume=CanonicalScalar("json_string", str(100 + minute)),
                 raw_body_sha256=capture.body_sha256,
@@ -297,6 +322,68 @@ class EmpiricalPipelineTest(unittest.TestCase):
         self.assertEqual(len(coverage.source_evidence_sha256), 64)
         self.assertEqual(len(result.feature_dataset.observations), 2)
 
+    def test_early_close_ignores_provider_all_rows_after_supplied_session_end(
+        self,
+    ) -> None:
+        target = _full_day_scope("AAPL", 3)
+        benchmark = _full_day_scope("SPY", 3)
+        market_open = datetime(2026, 7, 3, 13, 30, tzinfo=timezone.utc)
+        sessions = (FeatureSession(date(2026, 7, 3), 210),)
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            _write_two_minute_archive(
+                root,
+                target,
+                minute_count=390,
+                first_event_at=market_open,
+            )
+            _write_two_minute_archive(
+                root,
+                benchmark,
+                minute_count=390,
+                first_event_at=market_open,
+            )
+
+            result = run_direction_neutral_empirical_pipeline(
+                archive_root=root,
+                target_scopes=(target,),
+                benchmark_scopes=(benchmark,),
+                market=FeatureMarket.US_REGULAR,
+                sessions=sessions,
+                horizon=LabelHorizon.MINUTES_5,
+            )
+
+        coverage = result.session_coverage.entries[0]
+        self.assertTrue(coverage.included)
+        self.assertEqual(coverage.target.observed_offsets, tuple(range(210)))
+        self.assertEqual(coverage.target.unexpected_offsets, ())
+        self.assertEqual(coverage.benchmark.observed_offsets, tuple(range(210)))
+        self.assertEqual(len(result.target_series.bars), 390)
+        self.assertEqual(len(result.feature_dataset.observations), 210)
+        self.assertEqual(
+            result.feature_dataset.observations[-1].minute_of_day,
+            570 + 209,
+        )
+
+    def test_reports_insufficient_loadable_archives_with_precise_name(self) -> None:
+        target = _scope("AAPL", 1)
+        benchmark = _scope("SPY", 1)
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            with self.assertRaises(EmpiricalPipelineError) as raised:
+                run_direction_neutral_empirical_pipeline(
+                    archive_root=Path(temporary_directory),
+                    target_scopes=(target,),
+                    benchmark_scopes=(benchmark,),
+                    market=FeatureMarket.US_REGULAR,
+                    sessions=(FeatureSession(date(2026, 7, 1), 2),),
+                    horizon=LabelHorizon.MINUTES_5,
+                )
+
+        self.assertEqual(
+            raised.exception.code,
+            "insufficient_loadable_daily_archives",
+        )
+
     def test_screens_every_row_labels_anchor_and_builds_deterministic_oof_example(
         self,
     ) -> None:
@@ -386,6 +473,15 @@ class EmpiricalPipelineTest(unittest.TestCase):
         self.assertIs(
             result.excluded_episodes[0].reason,
             ExcludedEpisodeReason.INTRABAR_RANGE_UNAVAILABLE,
+        )
+        self.assertEqual(len(result.oof_upstream_exclusions), 1)
+        oof_exclusion = result.oof_upstream_exclusions[0]
+        self.assertIsInstance(oof_exclusion, ExcludedOOFRow)
+        self.assertEqual(oof_exclusion.row_id, result.excluded_episodes[0].row_id)
+        self.assertEqual(oof_exclusion.horizon, LabelHorizon.MINUTES_5)
+        self.assertEqual(
+            oof_exclusion.source_evidence_sha256,
+            result.excluded_episodes[0].source_evidence_sha256,
         )
 
     def test_minute_indexed_screening_is_equivalent_to_naive_screening(self) -> None:

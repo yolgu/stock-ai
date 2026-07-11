@@ -138,9 +138,21 @@ class ExcludedOOFRow:
     row_id: str
     symbol: str
     session_id: str
+    horizon: LabelHorizon
     label: CompetitivePathLabel
     reason: str
     source_evidence_sha256: str
+
+    def __post_init__(self) -> None:
+        for value in (self.row_id, self.symbol, self.session_id, self.reason):
+            if type(value) is not str or not value or value != value.strip():
+                raise ValueError("excluded_oof_identity_invalid")
+        if not isinstance(self.horizon, LabelHorizon):
+            raise ValueError("label_horizon_invalid")
+        if not isinstance(self.label, CompetitivePathLabel):
+            raise ValueError("competitive_path_label_invalid")
+        if not _is_sha256(self.source_evidence_sha256):
+            raise ValueError("source_evidence_sha256_invalid")
 
 
 @dataclass(frozen=True)
@@ -228,6 +240,7 @@ def run_competitive_path_development_oof(
     *,
     frozen_session_axis: Sequence[str],
     horizon: LabelHorizon,
+    upstream_exclusions: Sequence[ExcludedOOFRow],
 ) -> CompetitivePathDevelopmentOOF:
     """Evaluate two baselines and three fixed candidates on one OOF row mask."""
     if not isinstance(horizon, LabelHorizon):
@@ -235,21 +248,34 @@ def run_competitive_path_development_oof(
     axis = _validate_session_axis(frozen_session_axis)
     axis_index = {session_id: index for index, session_id in enumerate(axis)}
     rows = _validate_and_order_examples(tuple(examples), axis_index, horizon)
+    upstream = _validate_upstream_exclusions(
+        upstream_exclusions,
+        rows,
+        axis_index,
+        horizon,
+    )
     folds = _build_folds(len(axis))
     if len(folds) < _MINIMUM_FOLDS:
         raise ValueError("insufficient_development_folds")
 
-    excluded = tuple(
+    censored = tuple(
         ExcludedOOFRow(
             row_id=row.row_id,
             symbol=row.symbol,
             session_id=row.session_id,
+            horizon=row.horizon,
             label=row.label,
             reason="censored_or_not_identifiable",
             source_evidence_sha256=row.source_evidence_sha256,
         )
         for row in rows
         if row.label is CompetitivePathLabel.CENSORED_OR_NOT_IDENTIFIABLE
+    )
+    excluded = tuple(
+        sorted(
+            upstream + censored,
+            key=lambda row: (axis_index[row.session_id], row.row_id),
+        )
     )
     eligible = tuple(
         row
@@ -306,7 +332,12 @@ def run_competitive_path_development_oof(
             common_identity,
             excluded,
         ),
-        input_dataset_sha256=_input_dataset_sha256(axis, horizon, rows),
+        input_dataset_sha256=_input_dataset_sha256(
+            axis,
+            horizon,
+            rows,
+            excluded,
+        ),
         predictions=prediction_tuple,
         metrics=metrics,
         hyperparameters=OOFHyperparameters(),
@@ -600,6 +631,32 @@ def _validate_and_order_examples(
     return tuple(sorted(rows, key=lambda row: (axis_index[row.session_id], row.row_id)))
 
 
+def _validate_upstream_exclusions(
+    values: Sequence[ExcludedOOFRow],
+    examples: tuple[CompetitivePathExample, ...],
+    axis_index: Mapping[str, int],
+    horizon: LabelHorizon,
+) -> tuple[ExcludedOOFRow, ...]:
+    if isinstance(values, (str, bytes)):
+        raise ValueError("upstream_exclusions_invalid")
+    rows = tuple(values)
+    if any(not isinstance(row, ExcludedOOFRow) for row in rows):
+        raise ValueError("upstream_exclusions_invalid")
+    row_ids = tuple(row.row_id for row in rows)
+    if len(set(row_ids)) != len(row_ids):
+        raise ValueError("duplicate_upstream_exclusion_row_id")
+    if any(row.session_id not in axis_index for row in rows):
+        raise ValueError("upstream_exclusion_session_outside_frozen_axis")
+    if any(row.horizon is not horizon for row in rows):
+        raise ValueError("mixed_label_horizons")
+    example_row_ids = {row.row_id for row in examples}
+    if any(row.row_id in example_row_ids for row in rows):
+        raise ValueError("upstream_exclusion_row_overlap")
+    return tuple(
+        sorted(rows, key=lambda row: (axis_index[row.session_id], row.row_id))
+    )
+
+
 def _rows_in(
     rows: tuple[CompetitivePathExample, ...],
     interval: SessionInterval,
@@ -699,7 +756,7 @@ def _row_mask_sha256(
         {
             "axis": axis,
             "horizon": horizon.value,
-            "excluded": tuple((row.row_id, row.reason) for row in excluded),
+            "excluded": tuple(_excluded_oof_body(row) for row in excluded),
             "folds": tuple(
                 (
                     fold.fold_id,
@@ -711,7 +768,7 @@ def _row_mask_sha256(
                 for fold in folds
             ),
             "rows": identities,
-            "schemaVersion": "rp001-s2-competitive-path-oof-mask.v1",
+            "schemaVersion": "rp001-s2-competitive-path-oof-mask.v2",
         },
         ensure_ascii=False,
         sort_keys=True,
@@ -724,11 +781,13 @@ def _input_dataset_sha256(
     axis: tuple[str, ...],
     horizon: LabelHorizon,
     rows: tuple[CompetitivePathExample, ...],
+    excluded: tuple[ExcludedOOFRow, ...],
 ) -> str:
     body = json.dumps(
         {
             "axis": axis,
             "horizon": horizon.value,
+            "excluded": tuple(_excluded_oof_body(row) for row in excluded),
             "rows": tuple(
                 {
                     "familyFlags": tuple(
@@ -751,13 +810,25 @@ def _input_dataset_sha256(
                 }
                 for row in rows
             ),
-            "schemaVersion": "rp001-s2-competitive-path-oof-input.v1",
+            "schemaVersion": "rp001-s2-competitive-path-oof-input.v2",
         },
         ensure_ascii=False,
         sort_keys=True,
         separators=(",", ":"),
     ).encode("utf-8")
     return hashlib.sha256(body).hexdigest()
+
+
+def _excluded_oof_body(row: ExcludedOOFRow) -> dict[str, str]:
+    return {
+        "rowId": row.row_id,
+        "symbol": row.symbol,
+        "sessionId": row.session_id,
+        "horizon": row.horizon.value,
+        "label": row.label.value,
+        "reason": row.reason,
+        "sourceEvidenceSha256": row.source_evidence_sha256,
+    }
 
 
 def _finite(value: object) -> bool:

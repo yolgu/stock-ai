@@ -11,6 +11,7 @@ from rp001_s2.overheat_oof import (
     FAMILY_NAMES,
     MODEL_IDS,
     CompetitivePathExample,
+    ExcludedOOFRow,
     FamilyThresholdFlags,
     multiclass_brier_score,
     multiclass_log_loss,
@@ -75,6 +76,7 @@ class CompetitivePathDevelopmentOOFTest(unittest.TestCase):
             _examples(sessions),
             frozen_session_axis=sessions,
             horizon=_HORIZON,
+            upstream_exclusions=(),
         )
 
         self.assertEqual(len(result.folds), 3)
@@ -106,6 +108,7 @@ class CompetitivePathDevelopmentOOFTest(unittest.TestCase):
             _examples(sessions),
             frozen_session_axis=sessions,
             horizon=_HORIZON,
+            upstream_exclusions=(),
         )
 
         self.assertEqual(
@@ -150,6 +153,7 @@ class CompetitivePathDevelopmentOOFTest(unittest.TestCase):
             _examples(sessions),
             frozen_session_axis=sessions,
             horizon=_HORIZON,
+            upstream_exclusions=(),
         )
 
         self.assertEqual(len(result.predictions), len(MODEL_IDS) * 58)
@@ -180,6 +184,7 @@ class CompetitivePathDevelopmentOOFTest(unittest.TestCase):
             examples,
             frozen_session_axis=sessions,
             horizon=_HORIZON,
+            upstream_exclusions=(),
         )
         changed_row = replace(
             examples[70],
@@ -190,6 +195,7 @@ class CompetitivePathDevelopmentOOFTest(unittest.TestCase):
             examples[:70] + (changed_row,) + examples[71:],
             frozen_session_axis=sessions,
             horizon=_HORIZON,
+            upstream_exclusions=(),
         )
 
         original_peer = next(
@@ -227,11 +233,13 @@ class CompetitivePathDevelopmentOOFTest(unittest.TestCase):
             examples,
             frozen_session_axis=sessions,
             horizon=_HORIZON,
+            upstream_exclusions=(),
         )
         reversed_input = run_competitive_path_development_oof(
             tuple(reversed(examples)),
             frozen_session_axis=sessions,
             horizon=_HORIZON,
+            upstream_exclusions=(),
         )
 
         self.assertEqual(forward, reversed_input)
@@ -249,6 +257,7 @@ class CompetitivePathDevelopmentOOFTest(unittest.TestCase):
                 _examples(short_axis, censored_indices=frozenset()),
                 frozen_session_axis=short_axis,
                 horizon=_HORIZON,
+                upstream_exclusions=(),
             )
 
     def test_rejects_mixed_horizons_and_invalid_source_evidence_hash(self) -> None:
@@ -263,6 +272,7 @@ class CompetitivePathDevelopmentOOFTest(unittest.TestCase):
                 mixed,
                 frozen_session_axis=sessions,
                 horizon=_HORIZON,
+                upstream_exclusions=(),
             )
         with self.assertRaisesRegex(ValueError, "source_evidence_sha256_invalid"):
             replace(examples[0], source_evidence_sha256="not-a-sha256")
@@ -276,6 +286,7 @@ class CompetitivePathDevelopmentOOFTest(unittest.TestCase):
                 rows,
                 frozen_session_axis=sessions,
                 horizon=_HORIZON,
+                upstream_exclusions=(),
             ).input_dataset_sha256
 
         original = dataset_hash(examples)
@@ -293,6 +304,78 @@ class CompetitivePathDevelopmentOOFTest(unittest.TestCase):
 
         self.assertEqual(len(original), 64)
         self.assertEqual(len({original, changed_label, changed_feature, changed_source}), 4)
+
+    def test_upstream_exclusions_are_auditable_and_bind_both_hashes(self) -> None:
+        sessions = _sessions()
+        examples = _examples(sessions)
+        exclusion = ExcludedOOFRow(
+            row_id="structural-row-001",
+            symbol="AAPL",
+            session_id=sessions[40],
+            horizon=_HORIZON,
+            label=CompetitivePathLabel.UPSIDE_ACCELERATION,
+            reason="intrabar_range_unavailable",
+            source_evidence_sha256="a" * 64,
+        )
+
+        first = run_competitive_path_development_oof(
+            examples,
+            frozen_session_axis=sessions,
+            horizon=_HORIZON,
+            upstream_exclusions=(exclusion,),
+        )
+        changed = run_competitive_path_development_oof(
+            examples,
+            frozen_session_axis=sessions,
+            horizon=_HORIZON,
+            upstream_exclusions=(
+                replace(exclusion, source_evidence_sha256="b" * 64),
+            ),
+        )
+
+        self.assertIn(exclusion, first.excluded_rows)
+        self.assertNotEqual(
+            first.input_dataset_sha256,
+            changed.input_dataset_sha256,
+        )
+        self.assertNotEqual(first.row_mask_sha256, changed.row_mask_sha256)
+
+    def test_rejects_invalid_or_overlapping_upstream_exclusions(self) -> None:
+        sessions = _sessions()
+        examples = _examples(sessions)
+        exclusion = ExcludedOOFRow(
+            row_id="structural-row-001",
+            symbol="AAPL",
+            session_id=sessions[40],
+            horizon=_HORIZON,
+            label=CompetitivePathLabel.UPSIDE_ACCELERATION,
+            reason="family_threshold_unavailable",
+            source_evidence_sha256="a" * 64,
+        )
+
+        with self.assertRaisesRegex(ValueError, "upstream_exclusion_row_overlap"):
+            run_competitive_path_development_oof(
+                examples,
+                frozen_session_axis=sessions,
+                horizon=_HORIZON,
+                upstream_exclusions=(replace(exclusion, row_id=examples[0].row_id),),
+            )
+        with self.assertRaisesRegex(ValueError, "upstream_exclusion_session_outside"):
+            run_competitive_path_development_oof(
+                examples,
+                frozen_session_axis=sessions,
+                horizon=_HORIZON,
+                upstream_exclusions=(replace(exclusion, session_id="outside"),),
+            )
+        with self.assertRaisesRegex(ValueError, "mixed_label_horizons"):
+            run_competitive_path_development_oof(
+                examples,
+                frozen_session_axis=sessions,
+                horizon=_HORIZON,
+                upstream_exclusions=(
+                    replace(exclusion, horizon=LabelHorizon.MINUTES_120),
+                ),
+            )
 
 
 class MulticlassMetricTest(unittest.TestCase):
