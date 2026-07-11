@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import unittest
 from dataclasses import replace
 from datetime import date, datetime, timedelta, timezone
@@ -25,6 +26,7 @@ _UTC_ORIGIN = datetime(2020, 1, 1, tzinfo=timezone.utc)
 def _observation(
     session_ordinal: int,
     *,
+    symbol: str = "AAPL",
     minute_of_day: int = 600,
     market_minute_ordinal: int | None = None,
     signed_return: float = 0.0,
@@ -54,13 +56,15 @@ def _observation(
         else session_date
     )
     return DirectionNeutralObservation(
-        symbol="AAPL",
+        symbol=symbol,
         session_ordinal=session_ordinal,
         minute_of_day=minute_of_day,
         market_minute_ordinal=resolved_market_minute_ordinal,
         minute_end_utc=resolved_minute_end,
         available_at_utc=(
-            resolved_minute_end if available_at_utc is None else available_at_utc
+            resolved_minute_end + timedelta(seconds=3)
+            if available_at_utc is None
+            else available_at_utc
         ),
         session_id=(
             resolved_session_date.isoformat() if session_id is None else session_id
@@ -93,6 +97,7 @@ def _decision(
     market_minute_ordinal: int,
     state: ScreenState,
     *,
+    symbol: str = "AAPL",
     session_ordinal: int | None = None,
     minute_of_day: int | None = None,
 ) -> ScreeningResult:
@@ -103,6 +108,7 @@ def _decision(
                 if session_ordinal is None
                 else session_ordinal
             ),
+            symbol=symbol,
             minute_of_day=(
                 market_minute_ordinal % 390
                 if minute_of_day is None
@@ -172,12 +178,15 @@ class DirectionNeutralScreeningTest(unittest.TestCase):
         observation = _observation(40, market_minute_ordinal=100)
 
         self.assertEqual(observation.minute_end_utc, _UTC_ORIGIN + timedelta(minutes=100))
-        self.assertEqual(observation.available_at_utc, observation.minute_end_utc)
+        self.assertEqual(
+            observation.available_at_utc,
+            observation.minute_end_utc + timedelta(seconds=3),
+        )
         self.assertEqual(observation.session_id, "2020-02-10")
         self.assertEqual(observation.session_date, date(2020, 2, 10))
         self.assertEqual(observation.source_window_sha256, _SOURCE_WINDOW_SHA256)
 
-    def test_target_must_be_available_at_signal_time_and_late_history_is_excluded(
+    def test_target_availability_is_signal_time_and_late_history_is_excluded(
         self,
     ) -> None:
         history = tuple(
@@ -191,23 +200,26 @@ class DirectionNeutralScreeningTest(unittest.TestCase):
             100,
             family_scores={family: 1_000.0 for family in _FAMILIES},
         )
-        late_target = replace(
-            target,
-            available_at_utc=target.minute_end_utc + timedelta(microseconds=1),
+        self.assertEqual(
+            screen_observation(target, history).state,
+            ScreenState.CANDIDATE,
         )
-
-        with self.assertRaisesRegex(ValueError, "target_not_available_at_signal"):
-            screen_observation(late_target, history)
 
         late_history = replace(
             history[0],
-            available_at_utc=target.minute_end_utc + timedelta(microseconds=1),
+            available_at_utc=target.available_at_utc + timedelta(microseconds=1),
         )
         result = screen_observation(target, (late_history,) + history[1:])
         self.assertEqual(result.state, ScreenState.UNKNOWN)
         self.assertTrue(
             all(screen.observation_count == 39 for screen in result.family_screens)
         )
+
+        with self.assertRaisesRegex(ValueError, "observation_timestamp_invalid"):
+            replace(
+                target,
+                available_at_utc=target.minute_end_utc - timedelta(microseconds=1),
+            )
 
     def test_type7_thresholds_are_strict_at_p99_and_p999(self) -> None:
         history = _sixty_session_history()
@@ -324,6 +336,11 @@ class DirectionNeutralScreeningTest(unittest.TestCase):
             100,
             family_scores={family: 0.0 for family in _FAMILIES},
         )
+        late_revision = replace(
+            history[-1],
+            available_at_utc=target.available_at_utc + timedelta(seconds=1),
+            family_scores={family: 1_000.0 for family in _FAMILIES},
+        )
         irrelevant = (
             _observation(
                 39,
@@ -342,6 +359,7 @@ class DirectionNeutralScreeningTest(unittest.TestCase):
                 101,
                 family_scores={family: 1_000.0 for family in _FAMILIES},
             ),
+            late_revision,
         )
 
         baseline = screen_observation(target, history)
@@ -409,6 +427,15 @@ class DirectionNeutralScreeningTest(unittest.TestCase):
 
 
 class OverheatEpisodeGroupingTest(unittest.TestCase):
+    def test_mixed_symbols_are_rejected_instead_of_combined(self) -> None:
+        decisions = (
+            _decision(0, ScreenState.CANDIDATE, symbol="AAPL"),
+            _decision(1, ScreenState.CANDIDATE, symbol="MSFT"),
+        )
+
+        with self.assertRaisesRegex(ValueError, "episode_symbol_mismatch"):
+            group_episodes(decisions)
+
     def test_gap_30_stays_in_burst_gap_31_starts_burst_and_gap_61_starts_episode(
         self,
     ) -> None:
@@ -528,16 +555,16 @@ class FirstPassageLabelTest(unittest.TestCase):
         anchor = _anchor()
         neutral_future = tuple(_future_bar(offset) for offset in range(1, 6))
         up_future = (
-            replace(neutral_future[0], log_high=10.04),
+            replace(neutral_future[0], log_high=10.08),
             *neutral_future[1:],
         )
         down_future = (
-            replace(neutral_future[0], log_low=9.96),
-            replace(neutral_future[1], log_high=10.04),
+            replace(neutral_future[0], log_low=9.92),
+            replace(neutral_future[1], log_high=10.08),
             *neutral_future[2:],
         )
         both_future = (
-            replace(neutral_future[0], log_low=9.96, log_high=10.04),
+            replace(neutral_future[0], log_low=9.92, log_high=10.08),
             *neutral_future[1:],
         )
 
@@ -592,9 +619,65 @@ class FirstPassageLabelTest(unittest.TestCase):
         )
 
         self.assertEqual(result.label, PassageLabel.NO_PASSAGE)
-        self.assertAlmostEqual(result.sigma, 0.014826, places=12)
-        self.assertAlmostEqual(result.upper_barrier, 10.029652, places=12)
-        self.assertAlmostEqual(result.lower_barrier, 9.970348, places=12)
+        expected_sigma = 0.014826 * math.sqrt(5.0)
+        self.assertAlmostEqual(result.sigma, expected_sigma, places=12)
+        self.assertAlmostEqual(
+            result.upper_barrier,
+            10.0 + 2.0 * expected_sigma,
+            places=12,
+        )
+        self.assertAlmostEqual(
+            result.lower_barrier,
+            10.0 - 2.0 * expected_sigma,
+            places=12,
+        )
+
+    def test_each_horizon_has_an_explicit_sqrt_market_minute_sigma(self) -> None:
+        cases = (
+            (
+                LabelHorizon.MINUTES_5,
+                5,
+                tuple(_future_bar(offset) for offset in range(1, 6)),
+            ),
+            (
+                LabelHorizon.MINUTES_30,
+                30,
+                tuple(_future_bar(offset) for offset in range(1, 31)),
+            ),
+            (
+                LabelHorizon.MINUTES_120,
+                120,
+                tuple(_future_bar(offset) for offset in range(1, 121)),
+            ),
+            (
+                LabelHorizon.SESSION_1,
+                390,
+                (
+                    *(_future_bar(offset) for offset in range(1, 5)),
+                    _future_bar(5, session_ordinal=41, minute_of_day=599),
+                    _future_bar(6, session_ordinal=41, minute_of_day=600),
+                ),
+            ),
+        )
+        for horizon, market_minutes, future in cases:
+            with self.subTest(horizon=horizon):
+                result = label_first_passage(
+                    _anchor(),
+                    _sigma_history() + future,
+                    horizon,
+                )
+                expected_sigma = 0.014826 * math.sqrt(float(market_minutes))
+
+                self.assertEqual(
+                    result.sigma_horizon_market_minutes,
+                    market_minutes,
+                )
+                self.assertAlmostEqual(result.sigma, expected_sigma, places=12)
+                self.assertAlmostEqual(
+                    result.upper_barrier,
+                    10.0 + 2.0 * expected_sigma,
+                    places=12,
+                )
 
     def test_sigma_requires_forty_pre_anchor_values_and_positive_mad(self) -> None:
         future = tuple(_future_bar(offset) for offset in range(1, 6))
@@ -665,7 +748,7 @@ class FirstPassageLabelTest(unittest.TestCase):
             6,
             session_ordinal=41,
             minute_of_day=600,
-            log_high=10.04,
+            log_high=10.7,
         )
 
         completed = label_first_passage(

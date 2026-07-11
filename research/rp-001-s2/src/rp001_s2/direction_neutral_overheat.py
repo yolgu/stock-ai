@@ -32,6 +32,16 @@ class LabelHorizon(str, Enum):
     SESSION_1 = "1S"
 
 
+_HORIZON_MARKET_MINUTES: Mapping[LabelHorizon, int] = MappingProxyType(
+    {
+        LabelHorizon.MINUTES_5: 5,
+        LabelHorizon.MINUTES_30: 30,
+        LabelHorizon.MINUTES_120: 120,
+        LabelHorizon.SESSION_1: 390,
+    }
+)
+
+
 class PassageLabel(str, Enum):
     UP_FIRST = "up_first"
     DOWN_FIRST = "down_first"
@@ -69,7 +79,7 @@ class DirectionNeutralObservation:
             raise ValueError("observation_market_minute_ordinal_invalid")
         if not _is_utc_datetime(self.minute_end_utc) or not _is_utc_datetime(
             self.available_at_utc
-        ):
+        ) or self.available_at_utc < self.minute_end_utc:
             raise ValueError("observation_timestamp_invalid")
         if (
             type(self.session_id) is not str
@@ -162,6 +172,7 @@ class FirstPassageResult:
     horizon: LabelHorizon
     label: PassageLabel
     sigma: float | None
+    sigma_horizon_market_minutes: int
     lower_barrier: float | None
     upper_barrier: float | None
     passage_market_minute_ordinal: int | None
@@ -220,8 +231,6 @@ def screen_observation(
     """Screen one observation without using its session or any future session."""
     if not isinstance(target, DirectionNeutralObservation):
         raise ValueError("screen_target_invalid")
-    if target.available_at_utc > target.minute_end_utc:
-        raise ValueError("target_not_available_at_signal")
     values = tuple(observations)
     if any(not isinstance(value, DirectionNeutralObservation) for value in values):
         raise ValueError("screen_history_invalid")
@@ -259,14 +268,17 @@ def group_episodes(
     screening_results: Sequence[ScreeningResult],
 ) -> tuple[OverheatEpisode, ...]:
     """Group candidate minutes using tradable-minute ordinals only."""
+    values = tuple(screening_results)
+    if any(not isinstance(result, ScreeningResult) for result in values):
+        raise ValueError("episode_screening_result_invalid")
+    if len({result.observation.symbol for result in values}) > 1:
+        raise ValueError("episode_symbol_mismatch")
     ordered = tuple(
         sorted(
-            screening_results,
+            values,
             key=lambda result: result.observation.market_minute_ordinal,
         )
     )
-    if any(not isinstance(result, ScreeningResult) for result in ordered):
-        raise ValueError("episode_screening_result_invalid")
     ordinals = tuple(
         result.observation.market_minute_ordinal for result in ordered
     )
@@ -314,24 +326,23 @@ def label_first_passage(
     observations: Sequence[DirectionNeutralObservation],
     horizon: LabelHorizon,
 ) -> FirstPassageResult:
-    """Label first barrier passage without feeding outcomes into screening."""
+    """Label passage with pre-anchor one-minute MAD scaled by sqrt(horizon)."""
     if not isinstance(anchor, DirectionNeutralObservation):
         raise ValueError("label_anchor_invalid")
     if not isinstance(horizon, LabelHorizon):
         raise ValueError("label_horizon_invalid")
-    if anchor.available_at_utc > anchor.minute_end_utc:
-        raise ValueError("anchor_not_available_at_signal")
     values = tuple(observations)
     if any(not isinstance(value, DirectionNeutralObservation) for value in values):
         raise ValueError("label_observation_invalid")
 
     same_symbol = tuple(value for value in values if value.symbol == anchor.symbol)
-    sigma = _ex_ante_sigma(anchor, same_symbol)
+    sigma = _ex_ante_sigma(anchor, same_symbol, horizon)
     if sigma is None:
         return FirstPassageResult(
             horizon=horizon,
             label=PassageLabel.SIGMA_NOT_ESTIMABLE,
             sigma=None,
+            sigma_horizon_market_minutes=_horizon_market_minutes(horizon),
             lower_barrier=None,
             upper_barrier=None,
             passage_market_minute_ordinal=None,
@@ -402,8 +413,8 @@ def _comparable_history(
                 and first_session
                 <= observation.session_ordinal
                 < target.session_ordinal
-                and observation.minute_end_utc <= target.minute_end_utc
-                and observation.available_at_utc <= target.minute_end_utc
+                and observation.minute_end_utc <= target.available_at_utc
+                and observation.available_at_utc <= target.available_at_utc
             ),
             key=lambda observation: observation.session_ordinal,
         )
@@ -450,19 +461,24 @@ def _screen_family(
 def _ex_ante_sigma(
     anchor: DirectionNeutralObservation,
     observations: tuple[DirectionNeutralObservation, ...],
+    horizon: LabelHorizon,
 ) -> float | None:
     historical_returns = tuple(
         observation.signed_return
         for observation in observations
         if observation.market_minute_ordinal < anchor.market_minute_ordinal
-        and observation.minute_end_utc <= anchor.minute_end_utc
-        and observation.available_at_utc <= anchor.minute_end_utc
+        and observation.minute_end_utc <= anchor.available_at_utc
+        and observation.available_at_utc <= anchor.available_at_utc
     )
     if len(historical_returns) < _MINIMUM_SIGMA_OBSERVATIONS:
         return None
     center = _median(historical_returns)
     mad = _median(tuple(abs(value - center) for value in historical_returns))
-    sigma = _ROBUST_SIGMA_NORMALIZATION * mad
+    sigma = (
+        _ROBUST_SIGMA_NORMALIZATION
+        * mad
+        * math.sqrt(float(_horizon_market_minutes(horizon)))
+    )
     return sigma if math.isfinite(sigma) and sigma > 0.0 else None
 
 
@@ -471,13 +487,8 @@ def _horizon_end_ordinal(
     observations: tuple[DirectionNeutralObservation, ...],
     horizon: LabelHorizon,
 ) -> int | None:
-    minute_counts = {
-        LabelHorizon.MINUTES_5: 5,
-        LabelHorizon.MINUTES_30: 30,
-        LabelHorizon.MINUTES_120: 120,
-    }
-    if horizon in minute_counts:
-        return anchor.market_minute_ordinal + minute_counts[horizon]
+    if horizon is not LabelHorizon.SESSION_1:
+        return anchor.market_minute_ordinal + _horizon_market_minutes(horizon)
     endpoints = tuple(
         observation
         for observation in observations
@@ -538,11 +549,16 @@ def _passage_result(
         horizon=horizon,
         label=label,
         sigma=sigma,
+        sigma_horizon_market_minutes=_horizon_market_minutes(horizon),
         lower_barrier=lower_barrier,
         upper_barrier=upper_barrier,
         passage_market_minute_ordinal=passage_ordinal,
         horizon_end_market_minute_ordinal=horizon_end,
     )
+
+
+def _horizon_market_minutes(horizon: LabelHorizon) -> int:
+    return _HORIZON_MARKET_MINUTES[horizon]
 
 
 def _type7_quantile(values: Sequence[float], probability: float) -> float:
