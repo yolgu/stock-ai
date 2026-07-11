@@ -1,0 +1,4 @@
+interface:
+  display_name: "Autonomous Research"
+  short_description: "Resume bounded research from a frozen Goal and ledger"
+  default_prompt: "Use $autonomous-research to execute this bounded research Goal until ProgramVersionTerminal or AWAITING_DATA_RELEASE."
