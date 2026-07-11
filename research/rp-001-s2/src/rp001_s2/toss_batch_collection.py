@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import re
 import threading
 import time
@@ -116,6 +117,7 @@ class GlobalMarketDataPacer:
         if (
             isinstance(minimum_interval_seconds, bool)
             or not isinstance(minimum_interval_seconds, (int, float))
+            or not math.isfinite(minimum_interval_seconds)
             or minimum_interval_seconds < _MINIMUM_REQUEST_INTERVAL_SECONDS
         ):
             raise TossBatchCollectionError("market_data_interval_invalid")
@@ -160,19 +162,25 @@ class _LazyTossMinuteSession:
         self._clock = clock
         self._request_pacer = request_pacer
         self._session: TossMinuteSession | None = None
+        self._session_open_failure: IntradayRunError | None = None
 
     def collect(self, scope: CollectionScope) -> IntradayCandleCollection:
         session = self._session
         if session is None:
-            environment = self._credential_loader(self._credential_file)
             try:
-                session = self._session_factory(
-                    environment=environment,
-                    clock=self._clock,
-                )
+                session = self._open_session_once()
                 self._session = session
-            finally:
-                environment.clear()
+            except IntradayRunError as error:
+                self._session_open_failure = IntradayRunError(
+                    error.code,
+                    captures=error.captures,
+                )
+                raise self._session_open_failure from None
+            except Exception:
+                self._session_open_failure = IntradayRunError(
+                    "unexpected_failure"
+                )
+                raise self._session_open_failure from None
         return session.collect(
             scope,
             request_pacer=self._request_pacer,
@@ -181,8 +189,25 @@ class _LazyTossMinuteSession:
     def close(self) -> None:
         session = self._session
         self._session = None
+        self._session_open_failure = None
         if session is not None:
             session.close()
+
+    def _open_session_once(self) -> TossMinuteSession:
+        failure = self._session_open_failure
+        if failure is not None:
+            raise IntradayRunError(
+                failure.code,
+                captures=failure.captures,
+            )
+        environment = self._credential_loader(self._credential_file)
+        try:
+            return self._session_factory(
+                environment=environment,
+                clock=self._clock,
+            )
+        finally:
+            environment.clear()
 
 
 @dataclass(frozen=True)

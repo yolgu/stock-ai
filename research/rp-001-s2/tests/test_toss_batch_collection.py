@@ -166,11 +166,13 @@ class _Dependencies:
         invalid_symbols: frozenset[str] = frozenset(),
         partial_symbols: frozenset[str] = frozenset(),
         unavailable_symbols: frozenset[str] = frozenset(),
+        session_error_code: str | None = None,
     ) -> None:
         self.failed_symbols = failed_symbols
         self.invalid_symbols = invalid_symbols
         self.partial_symbols = partial_symbols
         self.unavailable_symbols = unavailable_symbols
+        self.session_error_code = session_error_code
         self.credential_paths: list[Path] = []
         self.shard_symbols: list[str] = []
         self.pacer_ids: list[int] = []
@@ -195,6 +197,8 @@ class _Dependencies:
         self.assert_ephemeral_environment(environment)
         environment.clear()
         self.session_open_count += 1
+        if self.session_error_code is not None:
+            raise IntradayRunError(self.session_error_code)
         return self
 
     def collect(
@@ -476,6 +480,25 @@ class TossMinuteBatchResumeTest(unittest.TestCase):
         self.assertEqual(len(failure_manifest["rawArtifacts"]), 1)
         self.assertEqual(failure_manifest["canonicalArtifact"]["rowCount"], 0)
 
+    def test_session_open_failure_is_reused_without_reauthentication(self) -> None:
+        scopes = (_scope("AAPL"), _scope("MSFT", minute_offset=10))
+        dependencies = _Dependencies(session_error_code="authentication_failed")
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            summary = _run(Path(temporary_directory), scopes, dependencies)
+
+        self.assertEqual(
+            tuple(terminal.status for terminal in summary.terminals),
+            (BatchScopeStatus.FAILED, BatchScopeStatus.FAILED),
+        )
+        self.assertEqual(
+            tuple(terminal.error_code for terminal in summary.terminals),
+            ("authentication_failed", "authentication_failed"),
+        )
+        self.assertEqual(len(dependencies.credential_paths), 1)
+        self.assertEqual(dependencies.session_open_count, 1)
+        self.assertEqual(dependencies.session_close_count, 0)
+
     def test_invalid_capture_is_persisted_without_blocking_later_success(self) -> None:
         scope = _scope("AAPL")
         invalid_dependencies = _Dependencies(
@@ -690,11 +713,13 @@ class GlobalMarketDataPacerTest(unittest.TestCase):
             self.assertAlmostEqual(0.15, duration)
 
     def test_interval_cannot_cross_transport_safety_floor(self) -> None:
-        with self.assertRaisesRegex(
-            TossBatchCollectionError,
-            "market_data_interval_invalid",
-        ):
-            GlobalMarketDataPacer(0.209)
+        for invalid_interval in (0.209, float("nan"), float("inf"), float("-inf")):
+            with self.subTest(invalid_interval=invalid_interval):
+                with self.assertRaisesRegex(
+                    TossBatchCollectionError,
+                    "market_data_interval_invalid",
+                ):
+                    GlobalMarketDataPacer(invalid_interval)
 
         self.assertEqual(0.25, GlobalMarketDataPacer(0.25).minimum_interval_seconds)
 
