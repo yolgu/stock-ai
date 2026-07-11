@@ -54,7 +54,7 @@ def canonicalize_toss_daily_collection(
                 instrument_id=scope.instrument_id,
                 symbol=scope.symbol,
                 source_timestamp=row.timestamp,
-                session_date=_session_date(row.timestamp),
+                session_date=_session_date(row.timestamp, row.currency),
                 received_at_utc=received_at,
                 research_available_at_utc=received_at,
                 session_type=scope.session_scope,
@@ -145,10 +145,14 @@ def _row_values(row: CandleRow) -> dict[str, str]:
     }
 
 
-def _session_date(value: str) -> str:
+def _session_date(value: str, currency: str) -> str:
     parsed = datetime.fromisoformat(
         value[:-1] + "+00:00" if value.endswith("Z") else value
     )
     if parsed.tzinfo is None:
         raise DailyCanonicalizationError("timestamp_invalid")
-    return parsed.astimezone(_NEW_YORK).date().isoformat()
+    if currency == "KRW":
+        return parsed.date().isoformat()
+    if currency == "USD":
+        return parsed.astimezone(_NEW_YORK).date().isoformat()
+    raise DailyCanonicalizationError("currency_not_supported")

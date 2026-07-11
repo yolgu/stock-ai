@@ -152,6 +152,52 @@ class TossDailyCanonicalizationTest(unittest.TestCase):
         ):
             canonicalize_toss_daily_collection(adjusted_scope, collection)
 
+    def test_korean_daily_timestamp_uses_provider_local_session_date(self) -> None:
+        raw = {
+            **_raw_row(),
+            "timestamp": "2026-07-01T00:00:00+09:00",
+            "currency": "KRW",
+        }
+        capture = _capture(raw, 0)
+        scalar = lambda value: CanonicalScalar("decimal_string", value)
+        collection = CandleCollection(
+            symbol="000660",
+            adjusted=False,
+            start=date(2026, 7, 1),
+            end=date(2026, 7, 2),
+            session_timezone="Asia/Seoul",
+            provider_session_membership="not_documented",
+            analysis_rows=(
+                CandleRow(
+                    timestamp=raw["timestamp"],
+                    open_price=scalar("100"),
+                    high_price=scalar("103"),
+                    low_price=scalar("99"),
+                    close_price=scalar("102"),
+                    volume=scalar("1000"),
+                    currency="KRW",
+                ),
+            ),
+            audit_only_rows=(),
+            captures=(capture,),
+        )
+        scope = CollectionScope(
+            provider="toss",
+            feed="provider_all",
+            instrument_id="000660",
+            symbol="000660",
+            interval="1d",
+            start_at=datetime(2026, 7, 1, tzinfo=timezone.utc),
+            end_at=datetime(2026, 7, 3, tzinfo=timezone.utc),
+            adjustment_mode="native",
+            session_scope="provider_all",
+            sample_role=SampleRole.SEEN,
+        )
+
+        rows = canonicalize_toss_daily_collection(scope, collection)
+
+        self.assertEqual(rows[0].session_date, "2026-07-01")
+
 
 if __name__ == "__main__":
     unittest.main()
