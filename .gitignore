@@ -12,3 +12,13 @@ vitest.config.js
 vitest.config.d.ts
 __pycache__/
 *.py[cod]
+.DS_Store
+.env
+.env.*
+!.env.example
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+coverage/
