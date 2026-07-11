@@ -171,11 +171,16 @@ def _write_archive(
             )
         )
     completed = terminal_status is AcquisitionTerminalStatus.COMPLETED
+    data_unavailable = (
+        terminal_status is AcquisitionTerminalStatus.DATA_UNAVAILABLE
+    )
     completion = AcquisitionCompletion(
         requested_start_reached=completed,
         completion_reason=(
             "provider_terminal"
             if completed
+            else "data_unavailable"
+            if data_unavailable
             else "provider_terminal_before_start"
         ),
         terminal_status=terminal_status,
@@ -253,12 +258,13 @@ class VerifiedDailySeriesLoaderTest(unittest.TestCase):
         )
         self.assertEqual(result.ledger[0].status, DailyScopeLedgerStatus.LOADED)
 
-    def test_returns_missing_and_partial_scopes_in_ledger_without_using_rows(
+    def test_loads_partial_rows_and_keeps_missing_and_unavailable_in_ledger(
         self,
     ) -> None:
         complete_scope = _scope(1)
         missing_scope = _scope(2)
         partial_scope = _scope(3)
+        unavailable_scope = _scope(4)
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
             _write_archive(
@@ -272,18 +278,30 @@ class VerifiedDailySeriesLoaderTest(unittest.TestCase):
                 minutes_and_closes=((0, "100.3"),),
                 terminal_status=AcquisitionTerminalStatus.PARTIAL,
             )
+            _write_archive(
+                root,
+                unavailable_scope,
+                minutes_and_closes=(),
+                terminal_status=AcquisitionTerminalStatus.DATA_UNAVAILABLE,
+            )
 
             result = load_verified_daily_series(
                 root=root,
-                scopes=(complete_scope, missing_scope, partial_scope),
+                scopes=(
+                    complete_scope,
+                    missing_scope,
+                    partial_scope,
+                    unavailable_scope,
+                ),
             )
 
-        self.assertEqual(len(result.bars), 1)
+        self.assertEqual(len(result.bars), 2)
         self.assertEqual(
             tuple(entry.status for entry in result.ledger),
             (
                 DailyScopeLedgerStatus.LOADED,
                 DailyScopeLedgerStatus.MISSING,
+                DailyScopeLedgerStatus.PARTIAL_LOADED,
                 DailyScopeLedgerStatus.NON_RESUMABLE,
             ),
         )
@@ -291,6 +309,11 @@ class VerifiedDailySeriesLoaderTest(unittest.TestCase):
             result.ledger[2].reason,
             "partial:provider_terminal_before_start",
         )
+        self.assertEqual(
+            result.ledger[3].reason,
+            "data_unavailable:data_unavailable",
+        )
+        self.assertIsNotNone(result.ledger[2].manifest_sha256)
 
     def test_rejects_confirmation_scope_before_archive_lookup(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:

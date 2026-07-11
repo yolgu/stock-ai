@@ -26,10 +26,10 @@ from rp001_s2.direction_neutral_overheat import (
     CompetitivePathLabel,
     DirectionNeutralObservation,
     LabelHorizon,
+    screen_observation,
 )
 from rp001_s2.empirical_archive_loader import DailyScopeLedgerStatus
 from rp001_s2.empirical_pipeline import (
-    EmpiricalPipelineError,
     analyze_direction_neutral_dataset,
     run_direction_neutral_empirical_pipeline,
 )
@@ -60,7 +60,12 @@ def _scope(symbol: str, day: int) -> CollectionScope:
     )
 
 
-def _write_two_minute_archive(root: Path, scope: CollectionScope) -> None:
+def _write_two_minute_archive(
+    root: Path,
+    scope: CollectionScope,
+    *,
+    minute_count: int = 2,
+) -> None:
     body = json.dumps({"symbol": scope.symbol}).encode("utf-8")
     received_at = (scope.end_at + timedelta(minutes=1)).isoformat().replace(
         "+00:00", "Z"
@@ -80,7 +85,8 @@ def _write_two_minute_archive(root: Path, scope: CollectionScope) -> None:
         body_sha256=hashlib.sha256(body).hexdigest(),
     )
     rows: list[CanonicalMinuteBar] = []
-    for minute, close in enumerate(("100.1", "100.2")):
+    for minute in range(minute_count):
+        close = f"{100.1 + minute / 10:.1f}"
         event = scope.start_at + timedelta(minutes=minute)
         rows.append(
             CanonicalMinuteBar(
@@ -123,9 +129,9 @@ def _write_two_minute_archive(root: Path, scope: CollectionScope) -> None:
             requested_start_reached=True,
             completion_reason="provider_terminal",
             terminal_status=AcquisitionTerminalStatus.COMPLETED,
-            analysis_row_count=2,
+            analysis_row_count=minute_count,
             audit_row_count=0,
-            returned_row_count=2,
+            returned_row_count=minute_count,
         ),
     )
 
@@ -246,6 +252,50 @@ class EmpiricalPipelineTest(unittest.TestCase):
         )
         self.assertEqual(first.source_evidence_sha256, second.source_evidence_sha256)
 
+    def test_excludes_incomplete_sessions_on_one_common_mask_without_filling(self) -> None:
+        target_scopes = (_scope("AAPL", 1), _scope("AAPL", 2))
+        benchmark_scopes = (_scope("SPY", 1), _scope("SPY", 2))
+        sessions = (
+            FeatureSession(date(2026, 7, 1), 2),
+            FeatureSession(date(2026, 7, 2), 2),
+        )
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            _write_two_minute_archive(root, target_scopes[0])
+            _write_two_minute_archive(
+                root,
+                target_scopes[1],
+                minute_count=1,
+            )
+            _write_two_minute_archive(root, benchmark_scopes[0])
+            _write_two_minute_archive(root, benchmark_scopes[1])
+
+            result = run_direction_neutral_empirical_pipeline(
+                archive_root=root,
+                target_scopes=target_scopes,
+                benchmark_scopes=benchmark_scopes,
+                market=FeatureMarket.US_REGULAR,
+                sessions=sessions,
+                horizon=LabelHorizon.MINUTES_5,
+            )
+
+        coverage = result.session_coverage
+        self.assertEqual(
+            tuple(value.session_date for value in coverage.included_sessions),
+            (date(2026, 7, 1),),
+        )
+        self.assertEqual(
+            tuple(value.session_date for value in coverage.excluded_sessions),
+            (date(2026, 7, 2),),
+        )
+        self.assertTrue(coverage.entries[0].included)
+        self.assertFalse(coverage.entries[1].included)
+        self.assertFalse(coverage.entries[1].target.complete)
+        self.assertTrue(coverage.entries[1].benchmark.complete)
+        self.assertEqual(coverage.entries[1].target.missing_offsets, (1,))
+        self.assertEqual(len(coverage.source_evidence_sha256), 64)
+        self.assertEqual(len(result.feature_dataset.observations), 2)
+
     def test_screens_every_row_labels_anchor_and_builds_deterministic_oof_example(
         self,
     ) -> None:
@@ -287,20 +337,42 @@ class EmpiricalPipelineTest(unittest.TestCase):
             different_evidence.examples[0].source_evidence_sha256,
         )
 
-    def test_does_not_convert_missing_screen_family_to_false(self) -> None:
-        with self.assertRaises(EmpiricalPipelineError) as raised:
-            analyze_direction_neutral_dataset(
-                dataset=_feature_dataset(
-                    missing_family_at_anchor="absolute_market_residual_return"
-                ),
-                horizon=LabelHorizon.MINUTES_5,
-                input_evidence_sha256="b" * 64,
-            )
-
-        self.assertEqual(
-            raised.exception.code,
-            "oof_family_threshold_unavailable",
+    def test_preserves_label_but_excludes_episode_with_unavailable_family(self) -> None:
+        result = analyze_direction_neutral_dataset(
+            dataset=_feature_dataset(
+                missing_family_at_anchor="realized_volatility_5m"
+            ),
+            horizon=LabelHorizon.MINUTES_5,
+            input_evidence_sha256="b" * 64,
         )
+
+        self.assertEqual(len(result.episode_results), 1)
+        self.assertEqual(
+            result.episode_results[0].label.label,
+            CompetitivePathLabel.UPSIDE_ACCELERATION,
+        )
+        self.assertIsNone(result.episode_results[0].example)
+        self.assertEqual(result.examples, ())
+        self.assertEqual(result.excluded_episode_count, 1)
+        self.assertEqual(
+            result.excluded_episodes[0].reason,
+            "family_threshold_unavailable",
+        )
+        self.assertEqual(len(result.excluded_episodes[0].source_evidence_sha256), 64)
+
+    def test_minute_indexed_screening_is_equivalent_to_naive_screening(self) -> None:
+        dataset = _feature_dataset()
+        indexed = analyze_direction_neutral_dataset(
+            dataset=dataset,
+            horizon=LabelHorizon.MINUTES_5,
+            input_evidence_sha256="e" * 64,
+        )
+        naive = tuple(
+            screen_observation(observation, dataset.observations)
+            for observation in dataset.observations
+        )
+
+        self.assertEqual(indexed.screening_results, naive)
 
     def test_future_family_scores_do_not_change_an_earlier_screen(self) -> None:
         dataset = _feature_dataset()

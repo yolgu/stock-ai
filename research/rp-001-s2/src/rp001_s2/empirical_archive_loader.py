@@ -44,6 +44,7 @@ class EmpiricalArchiveError(ValueError):
 
 class DailyScopeLedgerStatus(str, Enum):
     LOADED = "loaded"
+    PARTIAL_LOADED = "partial_loaded"
     MISSING = "missing"
     NON_RESUMABLE = "non_resumable"
 
@@ -155,7 +156,11 @@ def load_verified_daily_series(
             raise EmpiricalArchiveError("archive_verification_failed") from None
 
         manifest_sha256 = hashlib.sha256(manifest_bytes).hexdigest()
-        if completion.terminal_status is not AcquisitionTerminalStatus.COMPLETED:
+        loadable = completion.terminal_status in {
+            AcquisitionTerminalStatus.COMPLETED,
+            AcquisitionTerminalStatus.PARTIAL,
+        }
+        if not loadable:
             ledger.append(
                 _ledger_entry(
                     scope,
@@ -174,11 +179,19 @@ def load_verified_daily_series(
         if len(bars) != completion.returned_row_count:
             raise EmpiricalArchiveError("archive_verification_failed")
         loaded_bars.extend(bars)
+        ledger_status = (
+            DailyScopeLedgerStatus.LOADED
+            if completion.terminal_status is AcquisitionTerminalStatus.COMPLETED
+            else DailyScopeLedgerStatus.PARTIAL_LOADED
+        )
         ledger.append(
             _ledger_entry(
                 scope,
-                DailyScopeLedgerStatus.LOADED,
-                reason=f"completed:{completion.completion_reason}",
+                ledger_status,
+                reason=(
+                    f"{completion.terminal_status.value}:"
+                    f"{completion.completion_reason}"
+                ),
                 row_count=len(bars),
                 manifest_sha256=manifest_sha256,
             )

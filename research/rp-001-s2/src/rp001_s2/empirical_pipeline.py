@@ -7,11 +7,15 @@ import json
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass
+from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from rp001_s2.archive_contract import CollectionScope
 from rp001_s2.direction_neutral_overheat import (
+    CompetitivePathLabel,
     CompetitivePathResult,
+    DirectionNeutralObservation,
     LabelHorizon,
     OverheatEpisode,
     ScreeningResult,
@@ -19,6 +23,7 @@ from rp001_s2.direction_neutral_overheat import (
     label_competitive_path,
     screen_observation,
 )
+from rp001_s2.archive_storage import CanonicalMinuteBar
 from rp001_s2.empirical_archive_loader import (
     VerifiedDailySeries,
     load_verified_daily_series,
@@ -57,7 +62,49 @@ class EpisodeCompetitivePath:
     episode: OverheatEpisode
     screening: ScreeningResult
     label: CompetitivePathResult
-    example: CompetitivePathExample
+    example: CompetitivePathExample | None
+    source_evidence_sha256: str
+
+
+@dataclass(frozen=True)
+class ExcludedEpisode:
+    row_id: str
+    symbol: str
+    session_id: str
+    horizon: LabelHorizon
+    label: CompetitivePathLabel
+    reason: str
+    source_evidence_sha256: str
+
+
+@dataclass(frozen=True)
+class SeriesSessionCoverage:
+    symbol: str
+    session_date: date
+    regular_minutes: int
+    observed_offsets: tuple[int, ...]
+    missing_offsets: tuple[int, ...]
+    unexpected_offsets: tuple[int, ...]
+    duplicate_offsets: tuple[int, ...]
+    complete: bool
+    source_evidence_sha256: str
+
+
+@dataclass(frozen=True)
+class CommonSessionCoverageEntry:
+    session: FeatureSession
+    target: SeriesSessionCoverage
+    benchmark: SeriesSessionCoverage
+    included: bool
+    source_evidence_sha256: str
+
+
+@dataclass(frozen=True)
+class CommonSessionCoverageLedger:
+    entries: tuple[CommonSessionCoverageEntry, ...]
+    included_sessions: tuple[FeatureSession, ...]
+    excluded_sessions: tuple[FeatureSession, ...]
+    source_evidence_sha256: str
 
 
 @dataclass(frozen=True)
@@ -66,20 +113,52 @@ class DirectionNeutralDatasetAnalysis:
     episodes: tuple[OverheatEpisode, ...]
     episode_results: tuple[EpisodeCompetitivePath, ...]
     examples: tuple[CompetitivePathExample, ...]
+    excluded_episodes: tuple[ExcludedEpisode, ...]
     source_evidence_sha256: str
+
+    @property
+    def excluded_episode_count(self) -> int:
+        return len(self.excluded_episodes)
 
 
 @dataclass(frozen=True)
 class DirectionNeutralEmpiricalResult:
     target_series: VerifiedDailySeries
     benchmark_series: VerifiedDailySeries
+    session_coverage: CommonSessionCoverageLedger
     feature_dataset: DirectionNeutralFeatureDataset
     screening_results: tuple[ScreeningResult, ...]
     episodes: tuple[OverheatEpisode, ...]
     episode_results: tuple[EpisodeCompetitivePath, ...]
     examples: tuple[CompetitivePathExample, ...]
+    excluded_episodes: tuple[ExcludedEpisode, ...]
     horizon: LabelHorizon
     source_evidence_sha256: str
+
+    @property
+    def excluded_episode_count(self) -> int:
+        return len(self.excluded_episodes)
+
+
+@dataclass(frozen=True)
+class _CoverageMarketContract:
+    timezone: ZoneInfo
+    open_time: time
+    maximum_regular_minutes: int
+
+
+_COVERAGE_MARKETS = {
+    FeatureMarket.US_REGULAR: _CoverageMarketContract(
+        timezone=ZoneInfo("America/New_York"),
+        open_time=time(9, 30),
+        maximum_regular_minutes=390,
+    ),
+    FeatureMarket.KR_REGULAR: _CoverageMarketContract(
+        timezone=ZoneInfo("Asia/Seoul"),
+        open_time=time(9, 0),
+        maximum_regular_minutes=390,
+    ),
+}
 
 
 def run_direction_neutral_empirical_pipeline(
@@ -100,6 +179,7 @@ def run_direction_neutral_empirical_pipeline(
     if not isinstance(horizon, LabelHorizon):
         raise EmpiricalPipelineError("label_horizon_invalid")
     session_values = tuple(sessions)
+    _validate_feature_sessions(session_values)
 
     target = load_verified_daily_series(
         root=archive_root,
@@ -118,10 +198,25 @@ def run_direction_neutral_empirical_pipeline(
         or target.symbol == benchmark.symbol
     ):
         raise EmpiricalPipelineError("pipeline_scope_mismatch")
+    coverage = _common_session_coverage(
+        target=target,
+        benchmark=benchmark,
+        sessions=session_values,
+        market=market,
+    )
+    if not coverage.included_sessions:
+        raise EmpiricalPipelineError("no_common_complete_feature_sessions")
+    included_dates = {
+        session.session_date for session in coverage.included_sessions
+    }
     try:
         dataset = build_direction_neutral_features(
-            symbol_bars=target.bars,
-            benchmark_bars=benchmark.bars,
+            symbol_bars=_bars_for_sessions(target, included_dates, market),
+            benchmark_bars=_bars_for_sessions(
+                benchmark,
+                included_dates,
+                market,
+            ),
             market=market,
             sessions=session_values,
         )
@@ -135,6 +230,7 @@ def run_direction_neutral_empirical_pipeline(
             "benchmarkSeriesEvidenceSha256": benchmark.source_evidence_sha256,
             "market": market.value,
             "horizon": horizon.value,
+            "sessionCoverageSha256": coverage.source_evidence_sha256,
             "featureSessions": [
                 {
                     "sessionDate": session.session_date.isoformat(),
@@ -152,11 +248,13 @@ def run_direction_neutral_empirical_pipeline(
     return DirectionNeutralEmpiricalResult(
         target_series=target,
         benchmark_series=benchmark,
+        session_coverage=coverage,
         feature_dataset=dataset,
         screening_results=analysis.screening_results,
         episodes=analysis.episodes,
         episode_results=analysis.episode_results,
         examples=analysis.examples,
+        excluded_episodes=analysis.excluded_episodes,
         horizon=horizon,
         source_evidence_sha256=analysis.source_evidence_sha256,
     )
@@ -179,10 +277,7 @@ def analyze_direction_neutral_dataset(
     ):
         raise EmpiricalPipelineError("input_evidence_sha256_invalid")
     observations = tuple(dataset.observations)
-    screening_results = tuple(
-        screen_observation(observation, observations)
-        for observation in observations
-    )
+    screening_results = _screen_by_minute_of_day(observations)
     episodes = group_episodes(screening_results)
     screen_by_ordinal = {
         result.observation.market_minute_ordinal: result
@@ -196,6 +291,7 @@ def analyze_direction_neutral_dataset(
         input_evidence_sha256,
     )
     episode_results: list[EpisodeCompetitivePath] = []
+    excluded_episodes: list[ExcludedEpisode] = []
     for episode in episodes:
         screening = screen_by_ordinal[episode.anchor.market_minute_ordinal]
         label = label_competitive_path(
@@ -204,23 +300,49 @@ def analyze_direction_neutral_dataset(
             episode,
             horizon,
         )
-        example = _competitive_path_example(
+        row_id = _episode_row_id(screening, horizon)
+        evidence_sha256 = _episode_evidence_sha256(
             screening=screening,
             episode=episode,
             label=label,
-            horizon=horizon,
             analysis_input_sha256=analysis_input_sha256,
         )
+        exclusion_reason = _example_exclusion_reason(screening)
+        example = None
+        if exclusion_reason is None:
+            example = _competitive_path_example(
+                screening=screening,
+                label=label,
+                horizon=horizon,
+                row_id=row_id,
+                evidence_sha256=evidence_sha256,
+            )
+        else:
+            excluded_episodes.append(
+                ExcludedEpisode(
+                    row_id=row_id,
+                    symbol=screening.observation.symbol,
+                    session_id=screening.observation.session_id,
+                    horizon=horizon,
+                    label=label.label,
+                    reason=exclusion_reason,
+                    source_evidence_sha256=evidence_sha256,
+                )
+            )
         episode_results.append(
             EpisodeCompetitivePath(
                 episode=episode,
                 screening=screening,
                 label=label,
                 example=example,
+                source_evidence_sha256=evidence_sha256,
             )
         )
     values = tuple(episode_results)
-    examples = tuple(value.example for value in values)
+    examples = tuple(
+        value.example for value in values if value.example is not None
+    )
+    excluded = tuple(excluded_episodes)
     pipeline_evidence_sha256 = _hash_body(
         {
             "schemaVersion": _PIPELINE_EVIDENCE_SCHEMA,
@@ -234,6 +356,15 @@ def analyze_direction_neutral_dataset(
                     "sourceEvidenceSha256": value.example.source_evidence_sha256,
                 }
                 for value in values
+                if value.example is not None
+            ],
+            "excludedEpisodes": [
+                {
+                    "rowId": value.row_id,
+                    "reason": value.reason,
+                    "sourceEvidenceSha256": value.source_evidence_sha256,
+                }
+                for value in excluded
             ],
         }
     )
@@ -242,6 +373,7 @@ def analyze_direction_neutral_dataset(
         episodes=episodes,
         episode_results=values,
         examples=examples,
+        excluded_episodes=excluded,
         source_evidence_sha256=pipeline_evidence_sha256,
     )
 
@@ -249,20 +381,12 @@ def analyze_direction_neutral_dataset(
 def _competitive_path_example(
     *,
     screening: ScreeningResult,
-    episode: OverheatEpisode,
     label: CompetitivePathResult,
     horizon: LabelHorizon,
-    analysis_input_sha256: str,
+    row_id: str,
+    evidence_sha256: str,
 ) -> CompetitivePathExample:
     screens = {value.family: value for value in screening.family_screens}
-    if set(screens) != set(FAMILY_NAMES):
-        raise EmpiricalPipelineError("oof_family_contract_mismatch")
-    if any(
-        screens[family].exceeds_p99 is None
-        or screens[family].exceeds_p999 is None
-        for family in FAMILY_NAMES
-    ):
-        raise EmpiricalPipelineError("oof_family_threshold_unavailable")
     family_flags = {
         family: FamilyThresholdFlags(
             exceeds_p99=screens[family].exceeds_p99 is True,
@@ -272,21 +396,8 @@ def _competitive_path_example(
     }
     range_value = screening.observation.family_scores.get("intrabar_log_range")
     if range_value is None:
-        raise EmpiricalPipelineError("oof_intrabar_range_unavailable")
-    evidence_sha256 = _hash_body(
-        {
-            "schemaVersion": _EXAMPLE_EVIDENCE_SCHEMA,
-            "analysisInputSha256": analysis_input_sha256,
-            "screening": _screening_body(screening),
-            "episode": _episode_body(episode),
-            "label": _label_body(label),
-        }
-    )
+        raise EmpiricalPipelineError("episode_exclusion_contract_broken")
     anchor = screening.observation
-    row_id = (
-        f"{anchor.symbol}:{anchor.session_id}:"
-        f"{anchor.market_minute_ordinal}:{horizon.value}"
-    )
     return CompetitivePathExample(
         row_id=row_id,
         symbol=anchor.symbol,
@@ -299,6 +410,236 @@ def _competitive_path_example(
         intrabar_log_range=range_value,
         source_evidence_sha256=evidence_sha256,
     )
+
+
+def _example_exclusion_reason(screening: ScreeningResult) -> str | None:
+    screens = {value.family: value for value in screening.family_screens}
+    if set(screens) != set(FAMILY_NAMES):
+        return "family_contract_mismatch"
+    if any(
+        screens[family].exceeds_p99 is None
+        or screens[family].exceeds_p999 is None
+        for family in FAMILY_NAMES
+    ):
+        return "family_threshold_unavailable"
+    if screening.observation.family_scores.get("intrabar_log_range") is None:
+        return "intrabar_range_unavailable"
+    return None
+
+
+def _episode_row_id(
+    screening: ScreeningResult,
+    horizon: LabelHorizon,
+) -> str:
+    anchor = screening.observation
+    return (
+        f"{anchor.symbol}:{anchor.session_id}:"
+        f"{anchor.market_minute_ordinal}:{horizon.value}"
+    )
+
+
+def _episode_evidence_sha256(
+    *,
+    screening: ScreeningResult,
+    episode: OverheatEpisode,
+    label: CompetitivePathResult,
+    analysis_input_sha256: str,
+) -> str:
+    return _hash_body(
+        {
+            "schemaVersion": _EXAMPLE_EVIDENCE_SCHEMA,
+            "analysisInputSha256": analysis_input_sha256,
+            "screening": _screening_body(screening),
+            "episode": _episode_body(episode),
+            "label": _label_body(label),
+        }
+    )
+
+
+def _screen_by_minute_of_day(
+    observations: tuple[DirectionNeutralObservation, ...],
+) -> tuple[ScreeningResult, ...]:
+    grouped: dict[int, list[DirectionNeutralObservation]] = {}
+    for observation in observations:
+        grouped.setdefault(observation.minute_of_day, []).append(observation)
+    groups = {minute: tuple(values) for minute, values in grouped.items()}
+    return tuple(
+        screen_observation(observation, groups[observation.minute_of_day])
+        for observation in observations
+    )
+
+
+def _validate_feature_sessions(sessions: tuple[FeatureSession, ...]) -> None:
+    if not sessions or any(
+        not isinstance(session, FeatureSession) for session in sessions
+    ):
+        raise EmpiricalPipelineError("feature_session_invalid")
+    dates = tuple(session.session_date for session in sessions)
+    if any(current <= previous for previous, current in zip(dates, dates[1:])):
+        raise EmpiricalPipelineError("feature_session_invalid")
+
+
+def _common_session_coverage(
+    *,
+    target: VerifiedDailySeries,
+    benchmark: VerifiedDailySeries,
+    sessions: tuple[FeatureSession, ...],
+    market: FeatureMarket,
+) -> CommonSessionCoverageLedger:
+    contract = _COVERAGE_MARKETS[market]
+    target_offsets = _regular_offsets_by_date(target.bars, contract)
+    benchmark_offsets = _regular_offsets_by_date(benchmark.bars, contract)
+    entries: list[CommonSessionCoverageEntry] = []
+    for session in sessions:
+        target_audit = _series_session_coverage(
+            series=target,
+            session=session,
+            observed_offsets=target_offsets.get(session.session_date, ()),
+        )
+        benchmark_audit = _series_session_coverage(
+            series=benchmark,
+            session=session,
+            observed_offsets=benchmark_offsets.get(session.session_date, ()),
+        )
+        included = target_audit.complete and benchmark_audit.complete
+        entry_hash = _hash_body(
+            {
+                "schemaVersion": "rp001-s2-common-session-coverage-entry.v1",
+                "sessionDate": session.session_date.isoformat(),
+                "regularMinutes": session.regular_minutes,
+                "targetCoverageSha256": target_audit.source_evidence_sha256,
+                "benchmarkCoverageSha256": (
+                    benchmark_audit.source_evidence_sha256
+                ),
+                "included": included,
+            }
+        )
+        entries.append(
+            CommonSessionCoverageEntry(
+                session=session,
+                target=target_audit,
+                benchmark=benchmark_audit,
+                included=included,
+                source_evidence_sha256=entry_hash,
+            )
+        )
+    values = tuple(entries)
+    included_sessions = tuple(
+        entry.session for entry in values if entry.included
+    )
+    excluded_sessions = tuple(
+        entry.session for entry in values if not entry.included
+    )
+    evidence_sha256 = _hash_body(
+        {
+            "schemaVersion": "rp001-s2-common-session-coverage-ledger.v1",
+            "entries": [
+                {
+                    "sessionDate": entry.session.session_date.isoformat(),
+                    "included": entry.included,
+                    "sourceEvidenceSha256": entry.source_evidence_sha256,
+                }
+                for entry in values
+            ],
+        }
+    )
+    return CommonSessionCoverageLedger(
+        entries=values,
+        included_sessions=included_sessions,
+        excluded_sessions=excluded_sessions,
+        source_evidence_sha256=evidence_sha256,
+    )
+
+
+def _series_session_coverage(
+    *,
+    series: VerifiedDailySeries,
+    session: FeatureSession,
+    observed_offsets: tuple[int, ...],
+) -> SeriesSessionCoverage:
+    expected = tuple(range(session.regular_minutes))
+    observed_set = set(observed_offsets)
+    expected_set = set(expected)
+    duplicates = tuple(
+        offset
+        for offset in sorted(observed_set)
+        if observed_offsets.count(offset) > 1
+    )
+    missing = tuple(sorted(expected_set - observed_set))
+    unexpected = tuple(sorted(observed_set - expected_set))
+    complete = observed_offsets == expected
+    evidence_sha256 = _hash_body(
+        {
+            "schemaVersion": "rp001-s2-series-session-coverage.v1",
+            "seriesEvidenceSha256": series.source_evidence_sha256,
+            "symbol": series.symbol,
+            "sessionDate": session.session_date.isoformat(),
+            "regularMinutes": session.regular_minutes,
+            "observedOffsets": list(observed_offsets),
+            "missingOffsets": list(missing),
+            "unexpectedOffsets": list(unexpected),
+            "duplicateOffsets": list(duplicates),
+            "complete": complete,
+        }
+    )
+    return SeriesSessionCoverage(
+        symbol=series.symbol,
+        session_date=session.session_date,
+        regular_minutes=session.regular_minutes,
+        observed_offsets=observed_offsets,
+        missing_offsets=missing,
+        unexpected_offsets=unexpected,
+        duplicate_offsets=duplicates,
+        complete=complete,
+        source_evidence_sha256=evidence_sha256,
+    )
+
+
+def _regular_offsets_by_date(
+    bars: tuple[CanonicalMinuteBar, ...],
+    contract: _CoverageMarketContract,
+) -> dict[date, tuple[int, ...]]:
+    grouped: dict[date, list[int]] = {}
+    open_minute = contract.open_time.hour * 60 + contract.open_time.minute
+    for bar in bars:
+        if bar.quality_status != "verified_completed":
+            continue
+        local = _event_start(bar).astimezone(contract.timezone)
+        offset = local.hour * 60 + local.minute - open_minute
+        if 0 <= offset < contract.maximum_regular_minutes:
+            grouped.setdefault(local.date(), []).append(offset)
+    return {
+        session_date: tuple(sorted(offsets))
+        for session_date, offsets in grouped.items()
+    }
+
+
+def _bars_for_sessions(
+    series: VerifiedDailySeries,
+    included_dates: set[date],
+    market: FeatureMarket,
+) -> tuple[CanonicalMinuteBar, ...]:
+    timezone_contract = _COVERAGE_MARKETS[market].timezone
+    return tuple(
+        bar
+        for bar in series.bars
+        if _event_start(bar).astimezone(timezone_contract).date()
+        in included_dates
+    )
+
+
+def _event_start(bar: CanonicalMinuteBar) -> datetime:
+    try:
+        parsed = datetime.fromisoformat(
+            bar.event_start_utc[:-1] + "+00:00"
+            if bar.event_start_utc.endswith("Z")
+            else bar.event_start_utc
+        )
+    except (TypeError, ValueError, OverflowError):
+        raise EmpiricalPipelineError("coverage_timestamp_invalid") from None
+    if parsed.tzinfo is None or parsed.utcoffset() != timedelta(0):
+        raise EmpiricalPipelineError("coverage_timestamp_invalid")
+    return parsed.astimezone(timezone.utc)
 
 
 def _analysis_input_sha256(
