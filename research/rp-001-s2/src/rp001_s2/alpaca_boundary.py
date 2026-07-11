@@ -91,6 +91,17 @@ class AlpacaCredentialCapability:
             (self._key_id, self._secret_key, *tuple(additional_values)),
         )
 
+    def contains_sensitive_headers(
+        self,
+        headers: Mapping[str, str],
+        additional_values: Sequence[str] = (),
+    ) -> bool:
+        """Return only whether response headers contain request-bound secrets."""
+        return _headers_contain_exact_values(
+            headers,
+            (self._key_id, self._secret_key, *tuple(additional_values)),
+        )
+
 
 class StrictAlpacaBarsTransport:
     """Permit only exact single-symbol reads within one frozen Alpaca scope."""
@@ -134,6 +145,12 @@ class StrictAlpacaBarsTransport:
             "alpaca_transport_error",
         )
         page_token = _page_token_from_url(request.url)
+        header_values = () if page_token is None else (page_token,)
+        if self._credentials.contains_sensitive_headers(
+            response.headers,
+            header_values,
+        ):
+            raise ReadOnlyBoundaryError("sensitive_response_header")
         additional_values = (
             ()
             if page_token is None or 200 <= response.status < 300
@@ -322,6 +339,25 @@ def _body_contains_exact_values(
         if isinstance(current, str) and any(
             secret in current for secret in values
         ):
+            return True
+    return False
+
+
+def _headers_contain_exact_values(
+    headers: object,
+    sensitive_values: Sequence[str],
+) -> bool:
+    if not isinstance(headers, Mapping):
+        return True
+    values = tuple(
+        value
+        for value in sensitive_values
+        if isinstance(value, str) and value
+    )
+    for name, value in headers.items():
+        if not isinstance(name, str) or not isinstance(value, str):
+            return True
+        if any(secret in name or secret in value for secret in values):
             return True
     return False
 

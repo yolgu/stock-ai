@@ -160,6 +160,12 @@ class StrictAlpacaDailyTransport:
             "alpaca_daily_transport_error",
         )
         page_token = _page_token_from_url(request.url)
+        header_values = () if page_token is None else (page_token,)
+        if self._credentials.contains_sensitive_headers(
+            response.headers,
+            header_values,
+        ):
+            raise ReadOnlyBoundaryError("sensitive_response_header")
         additional_values = (
             ()
             if page_token is None or 200 <= response.status < 300

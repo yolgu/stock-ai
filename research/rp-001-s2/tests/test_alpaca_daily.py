@@ -422,6 +422,27 @@ class AlpacaDailyCollectionTest(unittest.TestCase):
         self.assertEqual(raised.exception.captures, ())
         self.assertNotIn(secret, repr(raised.exception) + str(raised.exception))
 
+    def test_credential_or_requested_cursor_in_response_header_has_no_capture(self) -> None:
+        raw_cursor = "opaque-provider-page-cursor"
+        cases = (
+            (_KEY_ID, None),
+            (_SECRET_KEY, None),
+            (raw_cursor, raw_cursor),
+        )
+        for sensitive_value, page_token in cases:
+            with self.subTest(page_token_present=page_token is not None):
+                response = _Response(_body([], None))
+                response.headers["X-RateLimit-Reset"] = sensitive_value
+                transport = _transport(_QueueOpener((response,)))
+
+                with self.assertRaises(ReadOnlyBoundaryError) as raised:
+                    transport.request_page(page_token)
+
+                rendered = repr(raised.exception) + str(raised.exception)
+                self.assertEqual(raised.exception.code, "sensitive_response_header")
+                self.assertEqual(raised.exception.captures, ())
+                self.assertNotIn(sensitive_value, rendered)
+
     def test_conflicting_overlap_or_nonascending_page_is_invalid(self) -> None:
         cases = (
             (
