@@ -15,9 +15,11 @@ from rp001.toss_research_collector import RawHttpCapture
 from rp001_s2.instrument_directory_storage import (
     ImmutableInstrumentDirectoryStorage,
     InstrumentDirectoryStorageError,
+    StoredInstrumentDirectory,
 )
 from rp001_s2.us_instrument_directory import (
     CollectedUsInstrumentDirectory,
+    DirectoryContractVersion,
     parse_us_instrument_directory,
 )
 
@@ -39,6 +41,20 @@ _OTHER = (
     "SPY|SPDR S&P 500 ETF Trust|P|SPY|Y|100|N|SPY\r\n"
     "File Creation Time: 0711202621:01||||||\r\n"
 ).encode("utf-8")
+_VERSIONED_NASDAQ = _NASDAQ.replace(
+    b"AAPL|Apple Inc. - Common Stock|",
+    b"CCEC|Capital Clean Energy Carriers Corp. - Common Share|",
+).replace(
+    b"TEST|Test Common Stock|S|Y|",
+    b"PFBC|Preferred Bank - Common Stock|S|N|",
+)
+_VERSIONED_OTHER = _OTHER.replace(
+    b"TSLA|Tesla, Inc. - Common Stock|N|TSLA|",
+    b"OBAI|Our Bond, Inc. - Common Stock|N|OBAI|",
+).replace(
+    b"|N|100|N|TSLA",
+    b"|N|100|N|OBAI",
+)
 
 
 def _capture(
@@ -60,23 +76,185 @@ def _capture(
     )
 
 
-def _collected() -> CollectedUsInstrumentDirectory:
+def _collected_from_bodies(
+    nasdaq_body: bytes,
+    other_body: bytes,
+) -> CollectedUsInstrumentDirectory:
     return CollectedUsInstrumentDirectory(
-        directory=parse_us_instrument_directory(_NASDAQ, _OTHER),
+        directory=parse_us_instrument_directory(nasdaq_body, other_body),
         captures=(
             _capture(
                 "nasdaq_listed_symbol_directory",
                 "https://www.nasdaqtrader.com/dynamic/SymDir/nasdaqlisted.txt",
-                _NASDAQ,
+                nasdaq_body,
                 "2026-07-11T07:00:00Z",
             ),
             _capture(
                 "other_listed_symbol_directory",
                 "https://www.nasdaqtrader.com/dynamic/SymDir/otherlisted.txt",
-                _OTHER,
+                other_body,
                 "2026-07-11T07:00:01Z",
             ),
         ),
+    )
+
+
+def _collected() -> CollectedUsInstrumentDirectory:
+    return _collected_from_bodies(_NASDAQ, _OTHER)
+
+
+def _canonical_json_bytes(value: object) -> bytes:
+    return json.dumps(
+        value,
+        allow_nan=False,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+
+
+def _write_private(path: Path, body: bytes) -> None:
+    path.write_bytes(body)
+    path.chmod(0o600)
+
+
+def _write_v1_fixture(
+    root: Path,
+    nasdaq_body: bytes,
+    other_body: bytes,
+) -> StoredInstrumentDirectory:
+    collected = _collected_from_bodies(nasdaq_body, other_body)
+    nasdaq_capture, other_capture = collected.captures
+    identity_body = {
+        "identityDomain": "rp001_s2.official_us_instrument_directory_archive",
+        "rawBodySha256": {
+            "nasdaqlisted": nasdaq_capture.body_sha256,
+            "otherlisted": other_capture.body_sha256,
+        },
+        "schemaVersion": "rp001-s2-official-us-instrument-directory-archive.v1",
+    }
+    content_identity = hashlib.sha256(
+        _canonical_json_bytes(identity_body)
+    ).hexdigest()
+    archive_directory = root / content_identity
+    archive_directory.mkdir(mode=0o700)
+    raw_directory = archive_directory / "raw"
+    raw_directory.mkdir(mode=0o700)
+    compressor = zstandard.ZstdCompressor(level=9)
+    nasdaq_compressed = compressor.compress(nasdaq_body)
+    other_compressed = compressor.compress(other_body)
+    nasdaq_raw_path = raw_directory / "nasdaqlisted.txt.zst"
+    other_raw_path = raw_directory / "otherlisted.txt.zst"
+    _write_private(nasdaq_raw_path, nasdaq_compressed)
+    _write_private(other_raw_path, other_compressed)
+
+    legacy_directory = parse_us_instrument_directory(
+        nasdaq_body,
+        other_body,
+        contract_version=DirectoryContractVersion.V1,
+    )
+    lineage = {
+        "nasdaqlisted": {
+            "bodySha256": nasdaq_capture.body_sha256,
+            "endpointId": nasdaq_capture.endpoint_id,
+            "receivedAt": nasdaq_capture.received_at,
+        },
+        "otherlisted": {
+            "bodySha256": other_capture.body_sha256,
+            "endpointId": other_capture.endpoint_id,
+            "receivedAt": other_capture.received_at,
+        },
+    }
+    master = {
+        "eligibleSymbols": list(legacy_directory.eligible_symbols),
+        "etfAssetClassStatus": legacy_directory.etf_asset_class_status,
+        "fileCreationTimes": {
+            "nasdaqlisted": legacy_directory.nasdaq_file_created_at,
+            "otherlisted": legacy_directory.other_file_created_at,
+        },
+        "rawLineage": lineage,
+        "records": [
+            {
+                "eligibility": record.eligibility.value,
+                "isEtf": record.is_etf,
+                "isTestIssue": record.is_test_issue,
+                "listingMarket": record.listing_market,
+                "providerSymbol": record.provider_symbol,
+                "rawBodySha256": lineage[record.source_directory]["bodySha256"],
+                "securityName": record.security_name,
+                "sourceDirectory": record.source_directory,
+                "symbol": record.symbol,
+            }
+            for record in legacy_directory.records
+        ],
+        "schemaVersion": "rp001-s2-official-us-instrument-master.v1",
+    }
+    master_bytes = _canonical_json_bytes(master)
+    master_sha256 = hashlib.sha256(master_bytes).hexdigest()
+    master_path = archive_directory / "instrument-master.json"
+    master_sha256_path = archive_directory / "instrument-master.json.sha256"
+    _write_private(master_path, master_bytes)
+    _write_private(master_sha256_path, f"{master_sha256}\n".encode("ascii"))
+
+    raw_artifacts = []
+    for source, relative_path, capture, raw_body, compressed in (
+        (
+            "nasdaqlisted",
+            "raw/nasdaqlisted.txt.zst",
+            nasdaq_capture,
+            nasdaq_body,
+            nasdaq_compressed,
+        ),
+        (
+            "otherlisted",
+            "raw/otherlisted.txt.zst",
+            other_capture,
+            other_body,
+            other_compressed,
+        ),
+    ):
+        raw_artifacts.append(
+            {
+                "compression": "ZSTD",
+                "endpointId": capture.endpoint_id,
+                "path": relative_path,
+                "receivedAt": capture.received_at,
+                "sourceDirectory": source,
+                "storedBytes": len(compressed),
+                "storedSha256": hashlib.sha256(compressed).hexdigest(),
+                "uncompressedBytes": len(raw_body),
+                "uncompressedSha256": capture.body_sha256,
+            }
+        )
+    manifest = {
+        "canonicalArtifact": {
+            "bytes": len(master_bytes),
+            "path": "instrument-master.json",
+            "sha256": master_sha256,
+            "sidecarPath": "instrument-master.json.sha256",
+        },
+        "contentIdentity": content_identity,
+        "identityDomain": "rp001_s2.official_us_instrument_directory_archive",
+        "rawArtifacts": raw_artifacts,
+        "schemaVersion": "rp001-s2-official-us-instrument-directory-archive.v1",
+    }
+    manifest_bytes = _canonical_json_bytes(manifest)
+    manifest_sha256 = hashlib.sha256(manifest_bytes).hexdigest()
+    manifest_path = archive_directory / "manifest.json"
+    manifest_sha256_path = archive_directory / "manifest.json.sha256"
+    _write_private(manifest_path, manifest_bytes)
+    _write_private(manifest_sha256_path, f"{manifest_sha256}\n".encode("ascii"))
+    return StoredInstrumentDirectory(
+        content_identity=content_identity,
+        archive_directory=archive_directory,
+        nasdaq_raw_path=nasdaq_raw_path,
+        other_raw_path=other_raw_path,
+        master_path=master_path,
+        master_sha256_path=master_sha256_path,
+        manifest_path=manifest_path,
+        manifest_sha256_path=manifest_sha256_path,
+        master_sha256=master_sha256,
+        manifest_sha256=manifest_sha256,
     )
 
 
@@ -113,6 +291,18 @@ class InstrumentDirectoryStorageWriteTest(unittest.TestCase):
             )
             master_bytes = stored.master_path.read_bytes()
             master = json.loads(master_bytes)
+            self.assertEqual(
+                master["schemaVersion"],
+                "rp001-s2-official-us-instrument-master.v2",
+            )
+            self.assertEqual(
+                master["parserVersion"],
+                "rp001-s2-us-instrument-directory-parser.v2",
+            )
+            self.assertEqual(
+                master["classifierVersion"],
+                "rp001-s2-us-instrument-classifier.v2",
+            )
             self.assertEqual(
                 master_bytes,
                 json.dumps(
@@ -159,6 +349,18 @@ class InstrumentDirectoryStorageWriteTest(unittest.TestCase):
             )
             manifest = json.loads(stored.manifest_path.read_bytes())
             self.assertEqual(manifest["contentIdentity"], stored.content_identity)
+            self.assertEqual(
+                manifest["schemaVersion"],
+                "rp001-s2-official-us-instrument-directory-archive.v2",
+            )
+            self.assertEqual(
+                manifest["parserVersion"],
+                "rp001-s2-us-instrument-directory-parser.v2",
+            )
+            self.assertEqual(
+                manifest["classifierVersion"],
+                "rp001-s2-us-instrument-classifier.v2",
+            )
             self.assertEqual(
                 manifest["rawArtifacts"][0]["receivedAt"],
                 "2026-07-11T07:00:00Z",
@@ -321,6 +523,46 @@ class InstrumentDirectoryStorageBoundaryTest(unittest.TestCase):
 
 
 class InstrumentDirectoryStorageVerificationTest(unittest.TestCase):
+    def test_v1_fixture_verifies_while_identical_raw_writes_distinct_v2(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            legacy = _write_v1_fixture(
+                root,
+                _VERSIONED_NASDAQ,
+                _VERSIONED_OTHER,
+            )
+            storage = ImmutableInstrumentDirectoryStorage(
+                root,
+                free_bytes=lambda _path: _AVAILABLE_BYTES,
+            )
+
+            storage.verify_archive(legacy)
+            current = storage.write_collection(
+                _collected_from_bodies(_VERSIONED_NASDAQ, _VERSIONED_OTHER)
+            )
+            storage.verify_archive(current)
+
+            self.assertNotEqual(legacy.content_identity, current.content_identity)
+            self.assertNotEqual(legacy.archive_directory, current.archive_directory)
+            legacy_master = json.loads(legacy.master_path.read_bytes())
+            current_master = json.loads(current.master_path.read_bytes())
+            legacy_by_symbol = {
+                record["symbol"]: record for record in legacy_master["records"]
+            }
+            current_by_symbol = {
+                record["symbol"]: record for record in current_master["records"]
+            }
+            for symbol in ("CCEC", "PFBC", "OBAI"):
+                with self.subTest(symbol=symbol):
+                    self.assertEqual(
+                        legacy_by_symbol[symbol]["eligibility"],
+                        "excluded_non_common",
+                    )
+                    self.assertEqual(
+                        current_by_symbol[symbol]["eligibility"],
+                        "common_stock",
+                    )
+
     def test_verification_detects_every_artifact_modification(self) -> None:
         artifact_names = (
             "nasdaq_raw_path",

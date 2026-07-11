@@ -46,17 +46,40 @@ _OTHER_HEADER = (
     "Test Issue",
     "NASDAQ Symbol",
 )
-_COMMON_EQUITY_MARKERS = (
+_COMMON_EQUITY_MARKERS_V1 = (
+    "common stock",
+    "common shares",
+    "ordinary share",
+)
+_COMMON_EQUITY_MARKERS_V2 = (
     "common stock",
     "common share",
     "ordinary share",
 )
-_NON_COMMON_PATTERN = re.compile(
+_NON_COMMON_PATTERN_V1 = re.compile(
+    r"\b(?:warrants?|rights?|units?|preferred|depositary shares?|"
+    r"depository shares?|notes?|bonds?|debentures?)\b",
+    re.IGNORECASE,
+)
+_NON_COMMON_PATTERN_V2 = re.compile(
     r"\b(?:warrants?|rights?|units?|depositary shares?|"
     r"depository shares?|adrs?)\b",
     re.IGNORECASE,
 )
 _SYMBOL_PATTERN = re.compile(r"^[A-Z][A-Z0-9.-]{0,13}$")
+
+
+class DirectoryContractVersion(str, Enum):
+    V1 = "v1"
+    V2 = "v2"
+
+    @property
+    def parser_version(self) -> str:
+        return f"rp001-s2-us-instrument-directory-parser.{self.value}"
+
+    @property
+    def classifier_version(self) -> str:
+        return f"rp001-s2-us-instrument-classifier.{self.value}"
 
 
 class InstrumentEligibility(str, Enum):
@@ -65,6 +88,19 @@ class InstrumentEligibility(str, Enum):
     EXCLUDED_TEST_ISSUE = "excluded_test_issue"
     EXCLUDED_NON_COMMON = "excluded_non_common"
     EXCLUDED_PROVIDER_SYMBOL = "excluded_provider_symbol"
+
+
+class InstrumentDirectoryCollectionError(ValueError):
+    """Collection failure retaining every safe official-file response."""
+
+    def __init__(
+        self,
+        code: str,
+        captures: tuple[RawHttpCapture, ...] = (),
+    ) -> None:
+        self.code = code
+        self.captures = captures
+        super().__init__(code)
 
 
 @dataclass(frozen=True)
@@ -131,19 +167,43 @@ def collect_us_instrument_directory(
         ("nasdaq_listed_symbol_directory", _NASDAQ_URL),
         ("other_listed_symbol_directory", _OTHER_URL),
     ):
-        response = transport(
-            HttpRequest(method="GET", url=url, headers={"Accept": "text/plain"})
-        )
-        if not 200 <= response.status < 300:
-            raise ValueError("instrument_directory_http_status")
-        content_type = _content_type(response)
-        if content_type != "text/plain":
-            raise ValueError("instrument_directory_content_type_invalid")
-        capture = _capture(endpoint_id, url, response, clock)
+        try:
+            response = transport(
+                HttpRequest(method="GET", url=url, headers={"Accept": "text/plain"})
+            )
+            capture = _capture(endpoint_id, url, response, clock)
+        except ReadOnlyBoundaryError as error:
+            raise InstrumentDirectoryCollectionError(
+                error.code,
+                tuple(captures),
+            ) from None
+        except ValueError as error:
+            raise InstrumentDirectoryCollectionError(
+                str(error),
+                tuple(captures),
+            ) from None
         captures.append(capture)
         bodies.append(response.body)
+        if not 200 <= response.status < 300:
+            raise InstrumentDirectoryCollectionError(
+                "instrument_directory_http_status",
+                tuple(captures),
+            )
+        content_type = _content_type(response)
+        if content_type != "text/plain":
+            raise InstrumentDirectoryCollectionError(
+                "instrument_directory_content_type_invalid",
+                tuple(captures),
+            )
+    try:
+        directory = parse_us_instrument_directory(bodies[0], bodies[1])
+    except ValueError:
+        raise InstrumentDirectoryCollectionError(
+            "instrument_directory_invalid",
+            tuple(captures),
+        ) from None
     return CollectedUsInstrumentDirectory(
-        directory=parse_us_instrument_directory(bodies[0], bodies[1]),
+        directory=directory,
         captures=tuple(captures),
     )
 
@@ -151,8 +211,12 @@ def collect_us_instrument_directory(
 def parse_us_instrument_directory(
     nasdaq_body: bytes,
     other_body: bytes,
+    *,
+    contract_version: DirectoryContractVersion = DirectoryContractVersion.V2,
 ) -> UsInstrumentDirectory:
     """Parse every official row, then derive a direction-agnostic collection set."""
+    if not isinstance(contract_version, DirectoryContractVersion):
+        raise ValueError("instrument_directory_contract_invalid")
     nasdaq_rows, nasdaq_created = _rows(
         nasdaq_body,
         _NASDAQ_HEADER,
@@ -163,8 +227,10 @@ def parse_us_instrument_directory(
         _OTHER_HEADER,
         footer_field_count=7,
     )
-    records = tuple(_nasdaq_record(row) for row in nasdaq_rows) + tuple(
-        _other_record(row) for row in other_rows
+    records = tuple(
+        _nasdaq_record(row, contract_version) for row in nasdaq_rows
+    ) + tuple(
+        _other_record(row, contract_version) for row in other_rows
     )
     symbols = tuple(record.symbol for record in records)
     if len(symbols) != len(set(symbols)):
@@ -215,7 +281,10 @@ def _rows(
     return tuple(parsed_rows), footer[0][len(prefix) :]
 
 
-def _nasdaq_record(row: tuple[str, ...]) -> DirectoryInstrument:
+def _nasdaq_record(
+    row: tuple[str, ...],
+    contract_version: DirectoryContractVersion,
+) -> DirectoryInstrument:
     return _record(
         symbol=row[0],
         provider_symbol=row[0],
@@ -224,10 +293,14 @@ def _nasdaq_record(row: tuple[str, ...]) -> DirectoryInstrument:
         source_directory="nasdaqlisted",
         etf=row[6],
         test_issue=row[3],
+        contract_version=contract_version,
     )
 
 
-def _other_record(row: tuple[str, ...]) -> DirectoryInstrument:
+def _other_record(
+    row: tuple[str, ...],
+    contract_version: DirectoryContractVersion,
+) -> DirectoryInstrument:
     return _record(
         symbol=row[0],
         provider_symbol=row[7],
@@ -236,6 +309,7 @@ def _other_record(row: tuple[str, ...]) -> DirectoryInstrument:
         source_directory="otherlisted",
         etf=row[4],
         test_issue=row[6],
+        contract_version=contract_version,
     )
 
 
@@ -248,6 +322,7 @@ def _record(
     source_directory: str,
     etf: str,
     test_issue: str,
+    contract_version: DirectoryContractVersion,
 ) -> DirectoryInstrument:
     if (
         not _safe_identifier(symbol)
@@ -266,6 +341,7 @@ def _record(
         security_name,
         is_etf,
         is_test,
+        contract_version,
     )
     return DirectoryInstrument(
         symbol=symbol,
@@ -285,6 +361,7 @@ def _eligibility(
     security_name: str,
     is_etf: bool,
     is_test: bool,
+    contract_version: DirectoryContractVersion,
 ) -> InstrumentEligibility:
     if is_test:
         return InstrumentEligibility.EXCLUDED_TEST_ISSUE
@@ -296,9 +373,19 @@ def _eligibility(
     if is_etf:
         return InstrumentEligibility.ETF
     normalized = security_name.casefold()
-    if _NON_COMMON_PATTERN.search(normalized) is not None:
+    non_common_pattern = (
+        _NON_COMMON_PATTERN_V1
+        if contract_version is DirectoryContractVersion.V1
+        else _NON_COMMON_PATTERN_V2
+    )
+    common_markers = (
+        _COMMON_EQUITY_MARKERS_V1
+        if contract_version is DirectoryContractVersion.V1
+        else _COMMON_EQUITY_MARKERS_V2
+    )
+    if non_common_pattern.search(normalized) is not None:
         return InstrumentEligibility.EXCLUDED_NON_COMMON
-    if any(marker in normalized for marker in _COMMON_EQUITY_MARKERS):
+    if any(marker in normalized for marker in common_markers):
         return InstrumentEligibility.COMMON_STOCK
     return InstrumentEligibility.EXCLUDED_NON_COMMON
 

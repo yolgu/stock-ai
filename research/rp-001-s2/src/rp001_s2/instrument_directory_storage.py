@@ -18,15 +18,19 @@ import zstandard
 from rp001.toss_research_collector import RawHttpCapture
 from rp001_s2.us_instrument_directory import (
     CollectedUsInstrumentDirectory,
+    DirectoryContractVersion,
     DirectoryInstrument,
     UsInstrumentDirectory,
     parse_us_instrument_directory,
 )
 
 
-_SCHEMA_VERSION = "rp001-s2-official-us-instrument-directory-archive.v1"
+_SCHEMA_VERSION_V1 = "rp001-s2-official-us-instrument-directory-archive.v1"
+_SCHEMA_VERSION_V2 = "rp001-s2-official-us-instrument-directory-archive.v2"
 _IDENTITY_DOMAIN = "rp001_s2.official_us_instrument_directory_archive"
-_MASTER_SCHEMA_VERSION = "rp001-s2-official-us-instrument-master.v1"
+_MASTER_SCHEMA_VERSION_V1 = "rp001-s2-official-us-instrument-master.v1"
+_MASTER_SCHEMA_VERSION_V2 = "rp001-s2-official-us-instrument-master.v2"
+_CURRENT_DIRECTORY_CONTRACT = DirectoryContractVersion.V2
 _MINIMUM_FREE_BYTES = 50 * 1024**3
 _NASDAQ_ENDPOINT = "nasdaq_listed_symbol_directory"
 _OTHER_ENDPOINT = "other_listed_symbol_directory"
@@ -102,10 +106,11 @@ class ImmutableInstrumentDirectoryStorage:
         self,
         collection: CollectedUsInstrumentDirectory,
     ) -> StoredInstrumentDirectory:
-        validated = _validate_collection(collection)
+        validated = _validate_collection(collection, _CURRENT_DIRECTORY_CONTRACT)
         content_identity = _content_identity(
             validated.nasdaq_capture.body_sha256,
             validated.other_capture.body_sha256,
+            _CURRENT_DIRECTORY_CONTRACT,
         )
         archive_directory = self._root / content_identity
         self._require_root()
@@ -130,7 +135,11 @@ class ImmutableInstrumentDirectoryStorage:
         self._write_new(other_raw_path, other_compressed)
 
         lineage = _raw_lineage(validated)
-        master_body = _master_body(validated.collection.directory, lineage)
+        master_body = _master_body(
+            validated.collection.directory,
+            lineage,
+            _CURRENT_DIRECTORY_CONTRACT,
+        )
         master_bytes = _canonical_json_bytes(master_body)
         master_sha256 = hashlib.sha256(master_bytes).hexdigest()
         master_path = archive_directory / _MASTER_PATH
@@ -148,6 +157,7 @@ class ImmutableInstrumentDirectoryStorage:
             other_compressed=other_compressed,
             master_bytes=master_bytes,
             master_sha256=master_sha256,
+            contract_version=_CURRENT_DIRECTORY_CONTRACT,
         )
         manifest_bytes = _canonical_json_bytes(manifest_body)
         manifest_sha256 = hashlib.sha256(manifest_bytes).hexdigest()
@@ -220,6 +230,7 @@ class ImmutableInstrumentDirectoryStorage:
             raise ValueError
         master = _load_canonical_json(master_bytes)
         manifest = _load_canonical_json(manifest_bytes)
+        contract_version = _contract_version_from_manifest(manifest)
 
         raw_artifacts = manifest.get("rawArtifacts")
         if not isinstance(raw_artifacts, list) or len(raw_artifacts) != 2:
@@ -240,16 +251,21 @@ class ImmutableInstrumentDirectoryStorage:
         derived_identity = _content_identity(
             hashlib.sha256(nasdaq_body).hexdigest(),
             hashlib.sha256(other_body).hexdigest(),
+            contract_version,
         )
         if derived_identity != stored.content_identity:
             raise ValueError
-        directory = parse_us_instrument_directory(nasdaq_body, other_body)
+        directory = parse_us_instrument_directory(
+            nasdaq_body,
+            other_body,
+            contract_version=contract_version,
+        )
         lineage = {
             "nasdaqlisted": _lineage_from_manifest(nasdaq_metadata),
             "otherlisted": _lineage_from_manifest(other_metadata),
         }
         expected_master_bytes = _canonical_json_bytes(
-            _master_body(directory, lineage)
+            _master_body(directory, lineage, contract_version)
         )
         if master_bytes != expected_master_bytes:
             raise ValueError
@@ -259,6 +275,7 @@ class ImmutableInstrumentDirectoryStorage:
             other_metadata=other_metadata,
             master_bytes=master_bytes,
             master_sha256=stored.master_sha256,
+            contract_version=contract_version,
         )
         if manifest != expected_manifest:
             raise ValueError
@@ -296,7 +313,10 @@ class ImmutableInstrumentDirectoryStorage:
             )
 
 
-def _validate_collection(value: object) -> _ValidatedInput:
+def _validate_collection(
+    value: object,
+    contract_version: DirectoryContractVersion,
+) -> _ValidatedInput:
     if (
         not isinstance(value, CollectedUsInstrumentDirectory)
         or type(value.captures) is not tuple
@@ -316,7 +336,11 @@ def _validate_collection(value: object) -> _ValidatedInput:
         _OTHER_URL,
     )
     try:
-        parsed = parse_us_instrument_directory(nasdaq_body, other_body)
+        parsed = parse_us_instrument_directory(
+            nasdaq_body,
+            other_body,
+            contract_version=contract_version,
+        )
     except ValueError:
         raise InstrumentDirectoryStorageError("directory_collection_invalid") from None
     if parsed != value.directory:
@@ -357,15 +381,22 @@ def _capture_body(
     return body
 
 
-def _content_identity(nasdaq_sha256: str, other_sha256: str) -> str:
+def _content_identity(
+    nasdaq_sha256: str,
+    other_sha256: str,
+    contract_version: DirectoryContractVersion,
+) -> str:
     body = {
         "identityDomain": _IDENTITY_DOMAIN,
         "rawBodySha256": {
             "nasdaqlisted": nasdaq_sha256,
             "otherlisted": other_sha256,
         },
-        "schemaVersion": _SCHEMA_VERSION,
+        "schemaVersion": _archive_schema_version(contract_version),
     }
+    if contract_version is DirectoryContractVersion.V2:
+        body["parserVersion"] = contract_version.parser_version
+        body["classifierVersion"] = contract_version.classifier_version
     return hashlib.sha256(_canonical_json_bytes(body)).hexdigest()
 
 
@@ -387,8 +418,9 @@ def _raw_lineage(validated: _ValidatedInput) -> dict[str, dict[str, str]]:
 def _master_body(
     directory: UsInstrumentDirectory,
     lineage: Mapping[str, Mapping[str, str]],
+    contract_version: DirectoryContractVersion,
 ) -> dict[str, object]:
-    return {
+    body: dict[str, object] = {
         "eligibleSymbols": list(directory.eligible_symbols),
         "etfAssetClassStatus": directory.etf_asset_class_status,
         "fileCreationTimes": {
@@ -403,8 +435,12 @@ def _master_body(
             _record_body(record, lineage[record.source_directory]["bodySha256"])
             for record in directory.records
         ],
-        "schemaVersion": _MASTER_SCHEMA_VERSION,
+        "schemaVersion": _master_schema_version(contract_version),
     }
+    if contract_version is DirectoryContractVersion.V2:
+        body["parserVersion"] = contract_version.parser_version
+        body["classifierVersion"] = contract_version.classifier_version
+    return body
 
 
 def _record_body(
@@ -432,6 +468,7 @@ def _manifest_body(
     other_compressed: bytes,
     master_bytes: bytes,
     master_sha256: str,
+    contract_version: DirectoryContractVersion,
 ) -> dict[str, object]:
     raw_artifacts = [
         _raw_artifact_body(
@@ -454,6 +491,7 @@ def _manifest_body(
         raw_artifacts,
         len(master_bytes),
         master_sha256,
+        contract_version,
     )
 
 
@@ -482,8 +520,9 @@ def _manifest_structure(
     raw_artifacts: list[dict[str, object]],
     master_bytes: int,
     master_sha256: str,
+    contract_version: DirectoryContractVersion,
 ) -> dict[str, object]:
-    return {
+    body: dict[str, object] = {
         "canonicalArtifact": {
             "bytes": master_bytes,
             "path": _MASTER_PATH.as_posix(),
@@ -493,8 +532,28 @@ def _manifest_structure(
         "contentIdentity": content_identity,
         "identityDomain": _IDENTITY_DOMAIN,
         "rawArtifacts": raw_artifacts,
-        "schemaVersion": _SCHEMA_VERSION,
+        "schemaVersion": _archive_schema_version(contract_version),
     }
+    if contract_version is DirectoryContractVersion.V2:
+        body["parserVersion"] = contract_version.parser_version
+        body["classifierVersion"] = contract_version.classifier_version
+    return body
+
+
+def _archive_schema_version(contract_version: DirectoryContractVersion) -> str:
+    return (
+        _SCHEMA_VERSION_V1
+        if contract_version is DirectoryContractVersion.V1
+        else _SCHEMA_VERSION_V2
+    )
+
+
+def _master_schema_version(contract_version: DirectoryContractVersion) -> str:
+    return (
+        _MASTER_SCHEMA_VERSION_V1
+        if contract_version is DirectoryContractVersion.V1
+        else _MASTER_SCHEMA_VERSION_V2
+    )
 
 
 def _verify_raw_artifact(
@@ -557,6 +616,7 @@ def _manifest_from_verified_artifacts(
     other_metadata: object,
     master_bytes: bytes,
     master_sha256: str,
+    contract_version: DirectoryContractVersion,
 ) -> dict[str, object]:
     if not isinstance(nasdaq_metadata, dict) or not isinstance(
         other_metadata,
@@ -568,7 +628,25 @@ def _manifest_from_verified_artifacts(
         [nasdaq_metadata, other_metadata],
         len(master_bytes),
         master_sha256,
+        contract_version,
     )
+
+
+def _contract_version_from_manifest(
+    manifest: dict[str, object],
+) -> DirectoryContractVersion:
+    schema_version = manifest.get("schemaVersion")
+    if schema_version == _SCHEMA_VERSION_V1:
+        return DirectoryContractVersion.V1
+    if (
+        schema_version == _SCHEMA_VERSION_V2
+        and manifest.get("parserVersion")
+        == DirectoryContractVersion.V2.parser_version
+        and manifest.get("classifierVersion")
+        == DirectoryContractVersion.V2.classifier_version
+    ):
+        return DirectoryContractVersion.V2
+    raise ValueError
 
 
 def _load_canonical_json(body: bytes) -> dict[str, object]:

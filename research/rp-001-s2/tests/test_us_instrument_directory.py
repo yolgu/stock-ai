@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import hashlib
+import inspect
 import io
 import unittest
 from datetime import datetime, timezone
 
 from rp001.toss_research_collector import HttpRequest
+import rp001_s2.us_instrument_directory as instrument_directory
 from rp001_s2.toss_boundary import ReadOnlyBoundaryError, _RejectRedirectHandler
 from rp001_s2.us_instrument_directory import (
     InstrumentEligibility,
@@ -35,9 +37,15 @@ _OTHER = (
 
 
 class _Response:
-    def __init__(self, body: bytes) -> None:
-        self.status = 200
-        self.headers = {"Content-Type": "text/plain; charset=utf-8"}
+    def __init__(
+        self,
+        body: bytes,
+        *,
+        status: int = 200,
+        content_type: str = "text/plain; charset=utf-8",
+    ) -> None:
+        self.status = status
+        self.headers = {"Content-Type": content_type}
         self._body = io.BytesIO(body)
 
     def read(self, size: int = -1) -> bytes:
@@ -59,6 +67,25 @@ class _Opener:
 
 
 class UsInstrumentDirectoryTest(unittest.TestCase):
+    def test_exports_typed_collection_error_with_safe_captures(self) -> None:
+        self.assertTrue(
+            hasattr(instrument_directory, "InstrumentDirectoryCollectionError")
+        )
+
+    def test_exports_versioned_parser_and_classifier_contract(self) -> None:
+        self.assertTrue(hasattr(instrument_directory, "DirectoryContractVersion"))
+
+    def test_parser_requires_an_explicit_typed_contract_when_overridden(self) -> None:
+        parameter = inspect.signature(parse_us_instrument_directory).parameters.get(
+            "contract_version"
+        )
+
+        self.assertIsNotNone(parameter)
+        self.assertEqual(
+            parameter.default,
+            instrument_directory.DirectoryContractVersion.V2,
+        )
+
     def test_preserves_all_rows_and_builds_direction_agnostic_eligible_universe(self) -> None:
         directory = parse_us_instrument_directory(_NASDAQ, _OTHER)
 
@@ -157,8 +184,20 @@ class UsInstrumentDirectoryTest(unittest.TestCase):
             b"|N|100|N|BABA",
         )
 
-        directory = parse_us_instrument_directory(nasdaq, other)
+        directory = parse_us_instrument_directory(
+            nasdaq,
+            other,
+            contract_version=instrument_directory.DirectoryContractVersion.V2,
+        )
+        legacy_directory = parse_us_instrument_directory(
+            nasdaq,
+            other,
+            contract_version=instrument_directory.DirectoryContractVersion.V1,
+        )
         by_symbol = {record.symbol: record for record in directory.records}
+        legacy_by_symbol = {
+            record.symbol: record for record in legacy_directory.records
+        }
 
         for symbol in ("CCEC", "PFBC", "OBAI"):
             with self.subTest(symbol=symbol):
@@ -166,9 +205,21 @@ class UsInstrumentDirectoryTest(unittest.TestCase):
                     by_symbol[symbol].eligibility,
                     InstrumentEligibility.COMMON_STOCK,
                 )
+                self.assertEqual(
+                    legacy_by_symbol[symbol].eligibility,
+                    InstrumentEligibility.EXCLUDED_NON_COMMON,
+                )
         self.assertEqual(
             by_symbol["BABA"].eligibility,
             InstrumentEligibility.EXCLUDED_NON_COMMON,
+        )
+        self.assertEqual(
+            instrument_directory.DirectoryContractVersion.V2.parser_version,
+            "rp001-s2-us-instrument-directory-parser.v2",
+        )
+        self.assertEqual(
+            instrument_directory.DirectoryContractVersion.V2.classifier_version,
+            "rp001-s2-us-instrument-classifier.v2",
         )
 
     def test_live_collection_preserves_exact_raw_body_hash_and_received_time(self) -> None:
@@ -185,6 +236,57 @@ class UsInstrumentDirectoryTest(unittest.TestCase):
         self.assertEqual(collected.captures[1].body_sha256, hashlib.sha256(_OTHER).hexdigest())
         self.assertEqual(collected.captures[0].received_at, "2026-07-11T07:00:00Z")
         self.assertEqual(collected.directory.eligible_symbols, ("AAPL", "QQQ", "SPY", "TSLA"))
+
+    def test_second_http_failure_retains_both_safe_captures(self) -> None:
+        failure_body = b'{"message":"upstream unavailable"}'
+        transport = StrictNasdaqDirectoryTransport(
+            opener=_Opener(
+                (
+                    _Response(_NASDAQ),
+                    _Response(failure_body, status=500),
+                )
+            )
+        )
+
+        with self.assertRaises(
+            instrument_directory.InstrumentDirectoryCollectionError
+        ) as raised:
+            collect_us_instrument_directory(
+                transport=transport,
+                clock=lambda: datetime(2026, 7, 11, 7, 0, tzinfo=timezone.utc),
+            )
+
+        self.assertEqual(raised.exception.code, "instrument_directory_http_status")
+        self.assertEqual(len(raised.exception.captures), 2)
+        self.assertEqual(
+            raised.exception.captures[0].body_sha256,
+            hashlib.sha256(_NASDAQ).hexdigest(),
+        )
+        self.assertEqual(
+            raised.exception.captures[1].body_sha256,
+            hashlib.sha256(failure_body).hexdigest(),
+        )
+
+    def test_parse_failure_retains_both_safe_captures(self) -> None:
+        malformed_other = _OTHER.replace(b"ACT Symbol|", b"Ticker|")
+        transport = StrictNasdaqDirectoryTransport(
+            opener=_Opener((_Response(_NASDAQ), _Response(malformed_other)))
+        )
+
+        with self.assertRaises(
+            instrument_directory.InstrumentDirectoryCollectionError
+        ) as raised:
+            collect_us_instrument_directory(
+                transport=transport,
+                clock=lambda: datetime(2026, 7, 11, 7, 0, tzinfo=timezone.utc),
+            )
+
+        self.assertEqual(raised.exception.code, "instrument_directory_invalid")
+        self.assertEqual(len(raised.exception.captures), 2)
+        self.assertEqual(
+            raised.exception.captures[1].body_sha256,
+            hashlib.sha256(malformed_other).hexdigest(),
+        )
 
     def test_transport_rejects_non_directory_hosts_paths_methods_and_headers(self) -> None:
         opener = _Opener()
