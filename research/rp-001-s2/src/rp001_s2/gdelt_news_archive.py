@@ -905,6 +905,9 @@ class GdeltArchiveStorage:
                 scope=scope,
                 manifest_body_binding=value.get("body"),
                 archive_directory=stored.archive_directory,
+                require_request_url_sha256=(
+                    schema_version == "rp001-s2-gdelt-news-manifest.v2"
+                ),
             )
             raw_paths.append(raw.path)
             metadata_paths.append(metadata.path)
@@ -1285,6 +1288,7 @@ def _validate_attempt_binding(
     scope: object,
     manifest_body_binding: object,
     archive_directory: Path,
+    require_request_url_sha256: bool,
 ) -> bool:
     if not isinstance(scope, dict):
         raise GdeltNewsArchiveError("gdelt_attempt_binding_invalid")
@@ -1306,6 +1310,8 @@ def _validate_attempt_binding(
         or metadata_body.get("mode") != scope.get("mode")
         or metadata_body.get("querySha256") != expected_query_sha256
         or metadata_body.get("status") != status
+        or require_request_url_sha256
+        and "requestUrlSha256" not in metadata_body
         or (
             "requestUrlSha256" in metadata_body
             and metadata_body.get("requestUrlSha256")

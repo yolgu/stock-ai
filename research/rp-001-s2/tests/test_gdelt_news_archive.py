@@ -760,6 +760,60 @@ class GdeltArchiveStorageTest(unittest.TestCase):
                     replace(stored, manifest_sha256=manifest_sha256)
                 )
 
+    def test_rejects_deleted_v2_request_url_hash_with_valid_rehashed_chain(self) -> None:
+        query_map = build_gdelt_query_map(
+            scope_plan_source=_scope_plan_source(),
+            directory_master_source=_directory_source(),
+            frozen_at="2026-07-11T16:10:00Z",
+        )
+        entry = next(value for value in query_map.entries if value.symbol == "TSLA")
+        controlled = _ControlledTime()
+        transport = _SequenceTransport(
+            (
+                GdeltHttpResponse(
+                    status=200,
+                    headers=(("content-type", "application/json"),),
+                    body=b'{"query_details":{},"timeline":[]}',
+                ),
+            )
+        )
+        transport.bind_time(controlled)
+        outcome = GlobalGdeltWorker(
+            transport=transport,
+            monotonic=controlled.monotonic,
+            sleeper=controlled.sleep,
+            utc_clock=controlled.utc_now,
+        ).collect((GdeltNewsScope.for_entry(entry, "timelinevolraw"),))[0]
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            storage = GdeltArchiveStorage(root)
+            stored = storage.publish_outcome(
+                storage.publish_query_map(query_map),
+                outcome,
+            )
+            metadata_path = stored.metadata_paths[0]
+            metadata = json.loads(metadata_path.read_bytes())
+            del metadata["requestUrlSha256"]
+            metadata_sha256 = _rewrite_canonical_artifact(
+                metadata_path,
+                metadata,
+            )
+            manifest = json.loads(stored.manifest_path.read_bytes())
+            manifest["attempts"][0]["metadata"]["sha256"] = metadata_sha256
+            manifest_sha256 = _rewrite_canonical_artifact(
+                stored.manifest_path,
+                manifest,
+            )
+
+            with self.assertRaisesRegex(
+                ValueError,
+                "gdelt_archive_verification_failed",
+            ):
+                storage.verify_scope(
+                    replace(stored, manifest_sha256=manifest_sha256)
+                )
+
     def test_rejects_impossible_retry_status_sequence_with_valid_hashes(self) -> None:
         query_map = build_gdelt_query_map(
             scope_plan_source=_scope_plan_source(),
