@@ -515,6 +515,8 @@ def _future_by_ordinal(
             raise ValueError("label_future_market_minute_duplicate")
         if observation.minute_end_utc <= anchor.minute_end_utc:
             raise ValueError("label_future_temporal_order_invalid")
+        if observation.minute_end_utc <= anchor.available_at_utc:
+            continue
         future[ordinal] = observation
     return future
 

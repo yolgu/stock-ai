@@ -550,6 +550,26 @@ class OverheatEpisodeGroupingTest(unittest.TestCase):
 
 
 class FirstPassageLabelTest(unittest.TestCase):
+    def test_outcome_before_delayed_signal_availability_is_censored(self) -> None:
+        anchor = _anchor()
+        delayed_anchor = replace(
+            anchor,
+            available_at_utc=anchor.minute_end_utc + timedelta(days=1),
+        )
+        future = (
+            replace(_future_bar(1), log_high=10.08),
+            *(_future_bar(offset) for offset in range(2, 6)),
+        )
+
+        result = label_first_passage(
+            delayed_anchor,
+            _sigma_history() + future,
+            LabelHorizon.MINUTES_5,
+        )
+
+        self.assertEqual(result.label, PassageLabel.CENSORED)
+        self.assertIsNone(result.passage_market_minute_ordinal)
+
     def test_first_up_down_and_same_minute_passages_are_distinct(self) -> None:
         history = _sigma_history()
         anchor = _anchor()
