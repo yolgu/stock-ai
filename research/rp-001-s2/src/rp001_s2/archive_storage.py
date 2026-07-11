@@ -12,7 +12,9 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
+from enum import Enum
 from pathlib import Path
+from urllib.parse import parse_qsl, urlsplit
 
 import duckdb
 import pyarrow as pa
@@ -28,7 +30,12 @@ from rp001_s2.archive_contract import (
 
 
 _MINIMUM_FREE_BYTES: int = 50 * 1024**3
-_SCHEMA_VERSION: str = "rp001-s2-immutable-minute-archive.v1"
+_SCHEMA_VERSION_V1: str = "rp001-s2-immutable-minute-archive.v1"
+_SCHEMA_VERSION_V2: str = "rp001-s2-immutable-minute-archive.v2"
+_FAILURE_EVIDENCE_SCHEMA_VERSION: str = (
+    "rp001-s2-immutable-minute-failure-evidence.v1"
+)
+_FAILURE_EVIDENCE_DOMAIN: str = "rp001_s2.immutable_minute_failure_evidence"
 _CANONICAL_RELATIVE_PATH: Path = Path("canonical/minute-bars.parquet")
 _OCCURRENCE_RELATIVE_PATH: Path = Path("canonical/minute-bar-occurrences.parquet")
 _CANONICAL_COLUMNS: tuple[str, ...] = (
@@ -70,9 +77,24 @@ _UNSIGNED_DECIMAL_PATTERN = re.compile(r"^[0-9]+(?:\.[0-9]+)?$")
 _JSON_NONNEGATIVE_NUMBER_PATTERN = re.compile(
     r"^(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?$"
 )
+_HTTP_METHOD_PATTERN = re.compile(r"^[A-Z]+$")
+_STABLE_ERROR_CODE_PATTERN = re.compile(r"^[A-Za-z][A-Za-z0-9_]*$")
 _JSON_NUMBER_FIDELITY: str = "json_number_lexeme"
 _DECIMAL_STRING_FIDELITY: str = "decimal_string_lexeme"
 _FORBIDDEN_IDENTIFIER_CATEGORIES: frozenset[str] = frozenset({"Cc", "Cf"})
+_ALLOWED_CAPTURE_HEADERS: frozenset[str] = frozenset(
+    {
+        "content-type",
+        "etag",
+        "last-modified",
+        "ratelimit-limit",
+        "ratelimit-remaining",
+        "ratelimit-reset",
+        "x-ratelimit-limit",
+        "x-ratelimit-remaining",
+        "x-ratelimit-reset",
+    }
+)
 
 FreeBytes = Callable[[Path], int]
 
@@ -83,6 +105,79 @@ class ArchiveStorageError(ValueError):
     def __init__(self, code: str) -> None:
         self.code = code
         super().__init__(code)
+
+
+class AcquisitionTerminalStatus(str, Enum):
+    COMPLETED = "completed"
+    PARTIAL = "partial"
+    DATA_UNAVAILABLE = "data_unavailable"
+    FAILED = "failed"
+    INVALID = "invalid"
+
+
+@dataclass(frozen=True)
+class AcquisitionCompletion:
+    requested_start_reached: bool
+    completion_reason: str
+    terminal_status: AcquisitionTerminalStatus
+    analysis_row_count: int
+    audit_row_count: int
+    returned_row_count: int
+
+    def __post_init__(self) -> None:
+        counts = (
+            self.analysis_row_count,
+            self.audit_row_count,
+            self.returned_row_count,
+        )
+        if (
+            type(self.requested_start_reached) is not bool
+            or type(self.completion_reason) is not str
+            or not self.completion_reason
+            or self.completion_reason != self.completion_reason.strip()
+            or not isinstance(self.terminal_status, AcquisitionTerminalStatus)
+            or any(type(count) is not int or count < 0 for count in counts)
+            or self.returned_row_count
+            != self.analysis_row_count + self.audit_row_count
+        ):
+            raise ArchiveStorageError("acquisition_completion_invalid")
+        if self.terminal_status is AcquisitionTerminalStatus.COMPLETED:
+            valid_terminal = (
+                self.requested_start_reached
+                and self.completion_reason != "provider_terminal_before_start"
+            )
+        elif self.terminal_status is AcquisitionTerminalStatus.PARTIAL:
+            valid_terminal = (
+                not self.requested_start_reached
+                and self.completion_reason == "provider_terminal_before_start"
+                and self.returned_row_count > 0
+            )
+        elif self.terminal_status is AcquisitionTerminalStatus.DATA_UNAVAILABLE:
+            valid_terminal = (
+                not self.requested_start_reached
+                and self.completion_reason
+                in {"data_unavailable", "empty_provider_terminal"}
+                and self.returned_row_count == 0
+            )
+        else:
+            valid_terminal = (
+                not self.requested_start_reached
+                and _STABLE_ERROR_CODE_PATTERN.fullmatch(self.completion_reason)
+                is not None
+                and self.returned_row_count == 0
+            )
+        if not valid_terminal:
+            raise ArchiveStorageError("acquisition_completion_invalid")
+
+    def to_canonical_body(self) -> dict[str, object]:
+        return {
+            "requestedStartReached": self.requested_start_reached,
+            "completionReason": self.completion_reason,
+            "terminalStatus": self.terminal_status.value,
+            "analysisRowCount": self.analysis_row_count,
+            "auditRowCount": self.audit_row_count,
+            "returnedRowCount": self.returned_row_count,
+        }
 
 
 @dataclass(frozen=True)
@@ -179,6 +274,22 @@ class StoredArchive:
     occurrence_path: Path
     manifest_path: Path
     manifest_sha256_path: Path
+
+
+@dataclass(frozen=True)
+class StoredFailureEvidence:
+    acquisition_key: str
+    evidence_digest: str
+    evidence_directory: Path
+    raw_paths: tuple[Path, ...]
+    canonical_path: Path
+    occurrence_path: Path
+    manifest_path: Path
+    manifest_sha256_path: Path
+
+    @property
+    def archive_directory(self) -> Path:
+        return self.evidence_directory
 
 
 class ArchiveViews:
@@ -298,11 +409,27 @@ class ImmutableArchiveStorage:
         scope: CollectionScope,
         captures: tuple[RawHttpCapture, ...],
         rows: tuple[CanonicalMinuteBar, ...],
+        completion: AcquisitionCompletion,
     ) -> StoredArchive:
-        if not isinstance(scope, CollectionScope):
+        if not isinstance(scope, CollectionScope) or not isinstance(
+            completion,
+            AcquisitionCompletion,
+        ):
             raise ArchiveStorageError("archive_input_invalid")
         raw_bodies = _decode_raw_captures(captures)
+        capture_requests = tuple(
+            _capture_request_body(capture) for capture in captures
+        )
         _validate_bars(scope, rows, captures)
+        if (
+            completion.terminal_status
+            in {
+                AcquisitionTerminalStatus.FAILED,
+                AcquisitionTerminalStatus.INVALID,
+            }
+            or completion.returned_row_count != len(rows)
+        ):
+            raise ArchiveStorageError("acquisition_completion_invalid")
 
         archive_directory = self._root / scope.acquisition_key
         self._require_capacity(self._root)
@@ -318,24 +445,23 @@ class ImmutableArchiveStorage:
         raw_artifacts: list[dict[str, object]] = []
         raw_paths: list[Path] = []
         compressor = zstandard.ZstdCompressor(level=9)
-        for ordinal, (capture, raw_body) in enumerate(zip(captures, raw_bodies, strict=True)):
+        for ordinal, (capture, raw_body, capture_request) in enumerate(
+            zip(captures, raw_bodies, capture_requests, strict=True)
+        ):
             relative_path = Path(f"raw/{ordinal:06d}.json.zst")
             raw_path = archive_directory / relative_path
             compressed = compressor.compress(raw_body)
             self._write_new_bytes(raw_path, compressed)
             raw_paths.append(raw_path)
             raw_artifacts.append(
-                {
-                    "captureOrdinal": ordinal,
-                    "endpointId": capture.endpoint_id,
-                    "receivedAt": capture.received_at,
-                    "status": capture.status,
-                    "path": relative_path.as_posix(),
-                    "uncompressedBytes": len(raw_body),
-                    "uncompressedSha256": hashlib.sha256(raw_body).hexdigest(),
-                    "storedBytes": len(compressed),
-                    "storedSha256": hashlib.sha256(compressed).hexdigest(),
-                }
+                _raw_artifact_body(
+                    ordinal,
+                    relative_path,
+                    capture,
+                    capture_request,
+                    raw_body,
+                    compressed,
+                )
             )
 
         canonical_path = archive_directory / _CANONICAL_RELATIVE_PATH
@@ -349,9 +475,10 @@ class ImmutableArchiveStorage:
         occurrence_sha256 = hashlib.sha256(occurrence_path.read_bytes()).hexdigest()
 
         manifest = {
-            "schemaVersion": _SCHEMA_VERSION,
+            "schemaVersion": _SCHEMA_VERSION_V2,
             "acquisitionKey": scope.acquisition_key,
             "scope": scope.to_canonical_body(),
+            "acquisitionCompletion": completion.to_canonical_body(),
             "rawArtifacts": raw_artifacts,
             "canonicalArtifact": {
                 "compression": "ZSTD",
@@ -391,6 +518,192 @@ class ImmutableArchiveStorage:
             self._verify_archive(stored)
         except Exception:
             raise ArchiveStorageError("archive_verification_failed") from None
+
+    def write_failure_evidence(
+        self,
+        *,
+        scope: CollectionScope,
+        captures: tuple[RawHttpCapture, ...],
+        completion: AcquisitionCompletion,
+    ) -> StoredFailureEvidence:
+        if (
+            not isinstance(scope, CollectionScope)
+            or not isinstance(completion, AcquisitionCompletion)
+            or completion.terminal_status
+            not in {
+                AcquisitionTerminalStatus.FAILED,
+                AcquisitionTerminalStatus.INVALID,
+            }
+        ):
+            raise ArchiveStorageError("failure_evidence_invalid")
+        raw_bodies = _decode_raw_captures(captures)
+        capture_requests = tuple(
+            _capture_request_body(capture) for capture in captures
+        )
+        evidence_digest = _failure_evidence_digest_from_captures(
+            scope,
+            captures,
+            capture_requests,
+            completion,
+        )
+        evidence_root = self._root / "failure-evidence" / scope.acquisition_key
+        evidence_directory = evidence_root / evidence_digest
+        stored = _stored_failure_evidence(
+            scope.acquisition_key,
+            evidence_digest,
+            evidence_directory,
+            len(captures),
+        )
+        if evidence_directory.exists():
+            self.verify_failure_evidence(stored)
+            return stored
+
+        self._require_capacity(self._root)
+        try:
+            evidence_root.mkdir(parents=True, exist_ok=True)
+            evidence_directory.mkdir()
+            (evidence_directory / "raw").mkdir()
+            (evidence_directory / "canonical").mkdir()
+        except FileExistsError:
+            self.verify_failure_evidence(stored)
+            return stored
+        except OSError:
+            raise ArchiveStorageError("failure_evidence_write_failed") from None
+
+        compressor = zstandard.ZstdCompressor(level=9)
+        raw_artifacts: list[dict[str, object]] = []
+        for ordinal, (capture, raw_body, capture_request) in enumerate(
+            zip(captures, raw_bodies, capture_requests, strict=True)
+        ):
+            relative_path = Path(f"raw/{ordinal:06d}.json.zst")
+            compressed = compressor.compress(raw_body)
+            self._write_new_bytes(evidence_directory / relative_path, compressed)
+            raw_artifacts.append(
+                _raw_artifact_body(
+                    ordinal,
+                    relative_path,
+                    capture,
+                    capture_request,
+                    raw_body,
+                    compressed,
+                )
+            )
+
+        canonical_table = _canonical_table(())
+        self._write_new_parquet(stored.canonical_path, canonical_table)
+        canonical_sha256 = hashlib.sha256(
+            stored.canonical_path.read_bytes()
+        ).hexdigest()
+        occurrence_table = _occurrence_table(())
+        self._write_new_parquet(stored.occurrence_path, occurrence_table)
+        occurrence_sha256 = hashlib.sha256(
+            stored.occurrence_path.read_bytes()
+        ).hexdigest()
+        manifest = {
+            "schemaVersion": _FAILURE_EVIDENCE_SCHEMA_VERSION,
+            "evidenceDigest": evidence_digest,
+            "acquisitionKey": scope.acquisition_key,
+            "scope": scope.to_canonical_body(),
+            "acquisitionCompletion": completion.to_canonical_body(),
+            "rawArtifacts": raw_artifacts,
+            "canonicalArtifact": {
+                "compression": "ZSTD",
+                "path": _CANONICAL_RELATIVE_PATH.as_posix(),
+                "rowCount": 0,
+                "sha256": canonical_sha256,
+            },
+            "occurrenceArtifact": {
+                "compression": "ZSTD",
+                "path": _OCCURRENCE_RELATIVE_PATH.as_posix(),
+                "rowCount": 0,
+                "sha256": occurrence_sha256,
+            },
+        }
+        manifest_bytes = _canonical_json_bytes(manifest)
+        self._write_new_bytes(stored.manifest_path, manifest_bytes)
+        manifest_sha256 = hashlib.sha256(manifest_bytes).hexdigest()
+        self._write_new_bytes(
+            stored.manifest_sha256_path,
+            f"{manifest_sha256}\n".encode("ascii"),
+        )
+        return stored
+
+    def verify_failure_evidence(self, stored: StoredFailureEvidence) -> None:
+        try:
+            self._verify_failure_evidence(stored)
+        except Exception:
+            raise ArchiveStorageError(
+                "failure_evidence_verification_failed"
+            ) from None
+
+    def _verify_failure_evidence(self, stored: StoredFailureEvidence) -> None:
+        if not isinstance(stored, StoredFailureEvidence):
+            raise ValueError
+        expected_directory = (
+            self._root
+            / "failure-evidence"
+            / stored.acquisition_key
+            / stored.evidence_digest
+        )
+        if (
+            stored.evidence_directory != expected_directory
+            or stored.canonical_path
+            != expected_directory / _CANONICAL_RELATIVE_PATH
+            or stored.occurrence_path
+            != expected_directory / _OCCURRENCE_RELATIVE_PATH
+            or stored.manifest_path != expected_directory / "manifest.json"
+            or stored.manifest_sha256_path
+            != expected_directory / "manifest.json.sha256"
+        ):
+            raise ValueError
+        expected_raw_paths = tuple(
+            expected_directory / f"raw/{ordinal:06d}.json.zst"
+            for ordinal in range(len(stored.raw_paths))
+        )
+        if stored.raw_paths != expected_raw_paths:
+            raise ValueError
+
+        manifest_bytes = stored.manifest_path.read_bytes()
+        manifest_sha256 = hashlib.sha256(manifest_bytes).hexdigest()
+        if stored.manifest_sha256_path.read_bytes() != f"{manifest_sha256}\n".encode(
+            "ascii"
+        ):
+            raise ValueError
+        manifest = json.loads(manifest_bytes)
+        if manifest_bytes != _canonical_json_bytes(manifest):
+            raise ValueError
+        _validate_failure_evidence_manifest_identity(manifest, stored)
+        raw_hashes = _verify_raw_artifacts(manifest, stored, _SCHEMA_VERSION_V2)
+        primary_lineage = _verify_canonical_artifact(manifest, stored, raw_hashes)
+        _verify_occurrence_artifact(manifest, stored, raw_hashes, primary_lineage)
+        if primary_lineage:
+            raise ValueError
+        completion = _acquisition_completion_from_metadata(
+            manifest["acquisitionCompletion"]
+        )
+        if completion.terminal_status not in {
+            AcquisitionTerminalStatus.FAILED,
+            AcquisitionTerminalStatus.INVALID,
+        }:
+            raise ValueError
+        expected_digest = _failure_evidence_digest_from_manifest(manifest)
+        if expected_digest != stored.evidence_digest:
+            raise ValueError
+
+    def load_resumable_completion(
+        self,
+        stored: StoredArchive,
+    ) -> AcquisitionCompletion:
+        self.verify_archive(stored)
+        manifest = json.loads(stored.manifest_path.read_bytes())
+        if _manifest_schema_version(manifest) != _SCHEMA_VERSION_V2:
+            raise ArchiveStorageError("archive_not_resumable")
+        try:
+            return _acquisition_completion_from_metadata(
+                manifest["acquisitionCompletion"]
+            )
+        except (ArchiveStorageError, KeyError, TypeError, ValueError):
+            raise ArchiveStorageError("archive_not_resumable") from None
 
     def open_views(
         self,
@@ -432,10 +745,13 @@ class ImmutableArchiveStorage:
         manifest = json.loads(manifest_bytes)
         if manifest_bytes != _canonical_json_bytes(manifest):
             raise ValueError
-        _validate_manifest_identity(manifest, stored)
-        raw_hashes = _verify_raw_artifacts(manifest, stored)
+        schema_version = _manifest_schema_version(manifest)
+        _validate_manifest_identity(manifest, stored, schema_version)
+        raw_hashes = _verify_raw_artifacts(manifest, stored, schema_version)
         primary_lineage = _verify_canonical_artifact(manifest, stored, raw_hashes)
         _verify_occurrence_artifact(manifest, stored, raw_hashes, primary_lineage)
+        if schema_version == _SCHEMA_VERSION_V2:
+            _verify_acquisition_completion(manifest, len(primary_lineage))
 
     def _write_new_bytes(self, path: Path, value: bytes) -> None:
         self._require_capacity(path.parent)
@@ -493,6 +809,208 @@ def _decode_raw_captures(captures: tuple[RawHttpCapture, ...]) -> tuple[bytes, .
             raise ArchiveStorageError("raw_capture_invalid")
         bodies.append(body)
     return tuple(bodies)
+
+
+def _capture_request_body(capture: RawHttpCapture) -> dict[str, object]:
+    if (
+        type(capture.method) is not str
+        or _HTTP_METHOD_PATTERN.fullmatch(capture.method) is None
+        or type(capture.sanitized_url) is not str
+        or not capture.sanitized_url
+        or any(character in capture.sanitized_url for character in "\r\n\x00")
+        or type(capture.query) is not tuple
+        or type(capture.headers) is not tuple
+        or type(capture.status) is not int
+        or not 100 <= capture.status <= 599
+        or not _is_canonical_identifier(capture.endpoint_id)
+    ):
+        raise ArchiveStorageError("raw_capture_invalid")
+    query = _ordered_capture_pairs(capture.query)
+    _require_sanitized_url_query(capture.sanitized_url, capture.query)
+    headers = _ordered_capture_pairs(
+        capture.headers,
+        allowed_names=_ALLOWED_CAPTURE_HEADERS,
+        unique_names=True,
+    )
+    try:
+        _parse_canonical_utc(capture.received_at, minute_grid=False)
+    except ArchiveStorageError:
+        raise ArchiveStorageError("raw_capture_invalid") from None
+    return {
+        "method": capture.method,
+        "sanitizedUrl": capture.sanitized_url,
+        "query": query,
+        "responseHeaders": headers,
+    }
+
+
+def _raw_artifact_body(
+    ordinal: int,
+    relative_path: Path,
+    capture: RawHttpCapture,
+    capture_request: dict[str, object],
+    raw_body: bytes,
+    compressed: bytes,
+) -> dict[str, object]:
+    return {
+        "captureOrdinal": ordinal,
+        "endpointId": capture.endpoint_id,
+        **capture_request,
+        "receivedAt": capture.received_at,
+        "status": capture.status,
+        "path": relative_path.as_posix(),
+        "uncompressedBytes": len(raw_body),
+        "uncompressedSha256": hashlib.sha256(raw_body).hexdigest(),
+        "storedBytes": len(compressed),
+        "storedSha256": hashlib.sha256(compressed).hexdigest(),
+    }
+
+
+def _failure_evidence_digest_from_captures(
+    scope: CollectionScope,
+    captures: tuple[RawHttpCapture, ...],
+    capture_requests: tuple[dict[str, object], ...],
+    completion: AcquisitionCompletion,
+) -> str:
+    raw_captures = [
+        {
+            "captureOrdinal": ordinal,
+            "endpointId": capture.endpoint_id,
+            **capture_request,
+            "receivedAt": capture.received_at,
+            "status": capture.status,
+            "bodySha256": capture.body_sha256,
+        }
+        for ordinal, (capture, capture_request) in enumerate(
+            zip(captures, capture_requests, strict=True)
+        )
+    ]
+    return _failure_evidence_digest(
+        scope.acquisition_key,
+        scope.to_canonical_body(),
+        completion.to_canonical_body(),
+        raw_captures,
+    )
+
+
+def _failure_evidence_digest_from_manifest(manifest: dict[str, object]) -> str:
+    raw_artifacts = manifest["rawArtifacts"]
+    if not isinstance(raw_artifacts, list):
+        raise ValueError
+    raw_captures: list[dict[str, object]] = []
+    for artifact in raw_artifacts:
+        if not isinstance(artifact, dict):
+            raise ValueError
+        raw_captures.append(
+            {
+                "captureOrdinal": artifact["captureOrdinal"],
+                "endpointId": artifact["endpointId"],
+                "method": artifact["method"],
+                "sanitizedUrl": artifact["sanitizedUrl"],
+                "query": artifact["query"],
+                "responseHeaders": artifact["responseHeaders"],
+                "receivedAt": artifact["receivedAt"],
+                "status": artifact["status"],
+                "bodySha256": artifact["uncompressedSha256"],
+            }
+        )
+    return _failure_evidence_digest(
+        manifest["acquisitionKey"],
+        manifest["scope"],
+        manifest["acquisitionCompletion"],
+        raw_captures,
+    )
+
+
+def _failure_evidence_digest(
+    acquisition_key: object,
+    scope: object,
+    completion: object,
+    raw_captures: object,
+) -> str:
+    identity = {
+        "schemaVersion": _FAILURE_EVIDENCE_SCHEMA_VERSION,
+        "identityDomain": _FAILURE_EVIDENCE_DOMAIN,
+        "acquisitionKey": acquisition_key,
+        "scope": scope,
+        "acquisitionCompletion": completion,
+        "rawCaptures": raw_captures,
+    }
+    return hashlib.sha256(_canonical_json_bytes(identity)).hexdigest()
+
+
+def _stored_failure_evidence(
+    acquisition_key: str,
+    evidence_digest: str,
+    evidence_directory: Path,
+    capture_count: int,
+) -> StoredFailureEvidence:
+    return StoredFailureEvidence(
+        acquisition_key=acquisition_key,
+        evidence_digest=evidence_digest,
+        evidence_directory=evidence_directory,
+        raw_paths=tuple(
+            evidence_directory / f"raw/{ordinal:06d}.json.zst"
+            for ordinal in range(capture_count)
+        ),
+        canonical_path=evidence_directory / _CANONICAL_RELATIVE_PATH,
+        occurrence_path=evidence_directory / _OCCURRENCE_RELATIVE_PATH,
+        manifest_path=evidence_directory / "manifest.json",
+        manifest_sha256_path=evidence_directory / "manifest.json.sha256",
+    )
+
+
+def _ordered_capture_pairs(
+    pairs: tuple[tuple[str, str], ...],
+    *,
+    allowed_names: frozenset[str] | None = None,
+    unique_names: bool = False,
+) -> list[dict[str, str]]:
+    ordered: list[dict[str, str]] = []
+    seen_names: set[str] = set()
+    for pair in pairs:
+        if type(pair) is not tuple or len(pair) != 2:
+            raise ArchiveStorageError("raw_capture_invalid")
+        name, value = pair
+        if (
+            type(name) is not str
+            or not name
+            or type(value) is not str
+            or any(character in name or character in value for character in "\r\n\x00")
+            or (allowed_names is not None and name not in allowed_names)
+            or (unique_names and name in seen_names)
+        ):
+            raise ArchiveStorageError("raw_capture_invalid")
+        seen_names.add(name)
+        ordered.append({"name": name, "value": value})
+    return ordered
+
+
+def _require_sanitized_url_query(
+    sanitized_url: str,
+    query: tuple[tuple[str, str], ...],
+) -> None:
+    try:
+        parsed = urlsplit(sanitized_url)
+        parsed_query = tuple(
+            parse_qsl(
+                parsed.query,
+                keep_blank_values=True,
+                strict_parsing=True,
+            )
+        )
+        valid = (
+            parsed.scheme == "https"
+            and bool(parsed.hostname)
+            and parsed.username is None
+            and parsed.password is None
+            and not parsed.fragment
+            and parsed_query == query
+        )
+    except (TypeError, UnicodeError, ValueError):
+        valid = False
+    if not valid:
+        raise ArchiveStorageError("raw_capture_invalid")
 
 
 def _validate_bars(
@@ -759,20 +1277,70 @@ def _canonical_json_bytes(value: object) -> bytes:
     ).encode("utf-8")
 
 
-def _validate_manifest_identity(manifest: object, stored: StoredArchive) -> None:
-    if not isinstance(manifest, dict) or set(manifest) != {
+def _manifest_schema_version(manifest: object) -> str:
+    if not isinstance(manifest, dict):
+        raise ValueError
+    schema_version = manifest.get("schemaVersion")
+    if schema_version not in {_SCHEMA_VERSION_V1, _SCHEMA_VERSION_V2}:
+        raise ValueError
+    return schema_version
+
+
+def _validate_manifest_identity(
+    manifest: object,
+    stored: StoredArchive,
+    schema_version: str,
+) -> None:
+    expected_fields = {
         "schemaVersion",
         "acquisitionKey",
         "scope",
         "rawArtifacts",
         "canonicalArtifact",
         "occurrenceArtifact",
+    }
+    if schema_version == _SCHEMA_VERSION_V2:
+        expected_fields.add("acquisitionCompletion")
+    if not isinstance(manifest, dict) or set(manifest) != expected_fields:
+        raise ValueError
+    if (
+        manifest["schemaVersion"] != schema_version
+        or manifest["acquisitionKey"] != stored.acquisition_key
+        or stored.archive_directory.name != stored.acquisition_key
+    ):
+        raise ValueError
+    scope = manifest["scope"]
+    if not isinstance(scope, dict) or "sampleRole" not in scope:
+        raise ValueError
+    acquisition_identity = dict(scope)
+    acquisition_identity.pop("sampleRole")
+    acquisition_digest = hashlib.sha256(
+        _canonical_json_bytes(acquisition_identity)
+    ).hexdigest()
+    if acquisition_digest != stored.acquisition_key:
+        raise ValueError
+
+
+def _validate_failure_evidence_manifest_identity(
+    manifest: object,
+    stored: StoredFailureEvidence,
+) -> None:
+    if not isinstance(manifest, dict) or set(manifest) != {
+        "schemaVersion",
+        "evidenceDigest",
+        "acquisitionKey",
+        "scope",
+        "acquisitionCompletion",
+        "rawArtifacts",
+        "canonicalArtifact",
+        "occurrenceArtifact",
     }:
         raise ValueError
     if (
-        manifest["schemaVersion"] != _SCHEMA_VERSION
+        manifest["schemaVersion"] != _FAILURE_EVIDENCE_SCHEMA_VERSION
+        or manifest["evidenceDigest"] != stored.evidence_digest
         or manifest["acquisitionKey"] != stored.acquisition_key
-        or stored.archive_directory.name != stored.acquisition_key
+        or _SHA256_PATTERN.fullmatch(stored.evidence_digest) is None
     ):
         raise ValueError
     scope = manifest["scope"]
@@ -790,6 +1358,7 @@ def _validate_manifest_identity(manifest: object, stored: StoredArchive) -> None
 def _verify_raw_artifacts(
     manifest: dict[str, object],
     stored: StoredArchive,
+    schema_version: str,
 ) -> dict[int, str]:
     raw_artifacts = manifest["rawArtifacts"]
     if not isinstance(raw_artifacts, list) or len(raw_artifacts) != len(stored.raw_paths):
@@ -797,7 +1366,7 @@ def _verify_raw_artifacts(
     raw_hashes: dict[int, str] = {}
     for ordinal, artifact in enumerate(raw_artifacts):
         expected_relative_path = f"raw/{ordinal:06d}.json.zst"
-        if not isinstance(artifact, dict) or set(artifact) != {
+        expected_fields = {
             "captureOrdinal",
             "endpointId",
             "receivedAt",
@@ -807,7 +1376,12 @@ def _verify_raw_artifacts(
             "uncompressedSha256",
             "storedBytes",
             "storedSha256",
-        }:
+        }
+        if schema_version == _SCHEMA_VERSION_V2:
+            expected_fields.update(
+                {"method", "sanitizedUrl", "query", "responseHeaders"}
+            )
+        if not isinstance(artifact, dict) or set(artifact) != expected_fields:
             raise ValueError
         if (
             artifact["captureOrdinal"] != ordinal
@@ -818,6 +1392,8 @@ def _verify_raw_artifacts(
             or type(artifact["storedBytes"]) is not int
         ):
             raise ValueError
+        if schema_version == _SCHEMA_VERSION_V2:
+            _verify_capture_request_body(artifact)
         compressed = stored.raw_paths[ordinal].read_bytes()
         if (
             len(compressed) != artifact["storedBytes"]
@@ -836,6 +1412,103 @@ def _verify_raw_artifacts(
             raise ValueError
         raw_hashes[ordinal] = artifact["uncompressedSha256"]
     return raw_hashes
+
+
+def _verify_capture_request_body(artifact: dict[str, object]) -> None:
+    query = _stored_capture_pairs(artifact["query"])
+    headers = _stored_capture_pairs(artifact["responseHeaders"])
+    if (
+        type(artifact["method"]) is not str
+        or _HTTP_METHOD_PATTERN.fullmatch(artifact["method"]) is None
+        or type(artifact["sanitizedUrl"]) is not str
+        or not artifact["sanitizedUrl"]
+        or any(
+            character in artifact["sanitizedUrl"]
+            for character in "\r\n\x00"
+        )
+        or not _is_canonical_identifier(artifact["endpointId"])
+        or type(artifact["status"]) is not int
+        or not 100 <= artifact["status"] <= 599
+    ):
+        raise ValueError
+    try:
+        _require_sanitized_url_query(artifact["sanitizedUrl"], query)
+        _parse_canonical_utc(artifact["receivedAt"], minute_grid=False)
+        expected_query = _ordered_capture_pairs(query)
+        expected_headers = _ordered_capture_pairs(
+            headers,
+            allowed_names=_ALLOWED_CAPTURE_HEADERS,
+            unique_names=True,
+        )
+    except ArchiveStorageError:
+        raise ValueError from None
+    if (
+        artifact["query"] != expected_query
+        or artifact["responseHeaders"] != expected_headers
+    ):
+        raise ValueError
+
+
+def _stored_capture_pairs(value: object) -> tuple[tuple[str, str], ...]:
+    if not isinstance(value, list):
+        raise ValueError
+    pairs: list[tuple[str, str]] = []
+    for item in value:
+        if not isinstance(item, dict) or set(item) != {"name", "value"}:
+            raise ValueError
+        name = item["name"]
+        pair_value = item["value"]
+        if type(name) is not str or type(pair_value) is not str:
+            raise ValueError
+        pairs.append((name, pair_value))
+    return tuple(pairs)
+
+
+def _verify_acquisition_completion(
+    manifest: dict[str, object],
+    canonical_row_count: int,
+) -> None:
+    completion = _acquisition_completion_from_metadata(
+        manifest["acquisitionCompletion"]
+    )
+    if (
+        completion.terminal_status
+        not in {
+            AcquisitionTerminalStatus.COMPLETED,
+            AcquisitionTerminalStatus.PARTIAL,
+            AcquisitionTerminalStatus.DATA_UNAVAILABLE,
+        }
+        or completion.returned_row_count != canonical_row_count
+    ):
+        raise ValueError
+
+
+def _acquisition_completion_from_metadata(
+    metadata: object,
+) -> AcquisitionCompletion:
+    if not isinstance(metadata, dict) or set(metadata) != {
+        "requestedStartReached",
+        "completionReason",
+        "terminalStatus",
+        "analysisRowCount",
+        "auditRowCount",
+        "returnedRowCount",
+    }:
+        raise ValueError
+    try:
+        completion = AcquisitionCompletion(
+            requested_start_reached=metadata["requestedStartReached"],
+            completion_reason=metadata["completionReason"],
+            terminal_status=AcquisitionTerminalStatus(metadata["terminalStatus"]),
+            analysis_row_count=metadata["analysisRowCount"],
+            audit_row_count=metadata["auditRowCount"],
+            returned_row_count=metadata["returnedRowCount"],
+        )
+    except (ArchiveStorageError, TypeError, ValueError):
+        raise ValueError from None
+    if metadata != completion.to_canonical_body():
+        raise ValueError
+    return completion
 
 
 def _verify_canonical_artifact(

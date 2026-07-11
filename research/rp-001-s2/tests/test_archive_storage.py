@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import inspect
 import json
 import tempfile
 import unittest
@@ -13,6 +14,7 @@ from pathlib import Path
 import pyarrow.parquet as parquet
 import zstandard
 
+import rp001_s2.archive_storage as archive_storage
 from rp001.toss_research_collector import CanonicalScalar, RawHttpCapture
 from rp001_s2.archive_contract import (
     CollectionScope,
@@ -50,7 +52,9 @@ def _capture(body: bytes) -> RawHttpCapture:
     return RawHttpCapture(
         endpoint_id="alpaca_historical_minute_bars_v2",
         method="GET",
-        sanitized_url="https://data.alpaca.markets/v2/stocks/AAPL/bars",
+        sanitized_url=(
+            "https://data.alpaca.markets/v2/stocks/AAPL/bars?timeframe=1Min"
+        ),
         query=(("timeframe", "1Min"),),
         status=200,
         headers=(("content-type", "application/json"),),
@@ -89,7 +93,342 @@ def _bar(raw_body_sha256: str) -> CanonicalMinuteBar:
     )
 
 
+def _completion(row_count: int) -> archive_storage.AcquisitionCompletion:
+    if row_count == 0:
+        return archive_storage.AcquisitionCompletion(
+            requested_start_reached=False,
+            completion_reason="data_unavailable",
+            terminal_status=archive_storage.AcquisitionTerminalStatus.DATA_UNAVAILABLE,
+            analysis_row_count=0,
+            audit_row_count=0,
+            returned_row_count=0,
+        )
+    return archive_storage.AcquisitionCompletion(
+        requested_start_reached=True,
+        completion_reason="provider_terminal",
+        terminal_status=archive_storage.AcquisitionTerminalStatus.COMPLETED,
+        analysis_row_count=row_count,
+        audit_row_count=0,
+        returned_row_count=row_count,
+    )
+
+
+def _rewrite_manifest_as_v1(stored: object) -> None:
+    manifest_path = getattr(stored, "manifest_path")
+    sidecar_path = getattr(stored, "manifest_sha256_path")
+    manifest = json.loads(manifest_path.read_bytes())
+    manifest["schemaVersion"] = "rp001-s2-immutable-minute-archive.v1"
+    manifest.pop("acquisitionCompletion", None)
+    for raw_artifact in manifest["rawArtifacts"]:
+        for field in ("method", "sanitizedUrl", "query", "responseHeaders"):
+            raw_artifact.pop(field, None)
+    manifest_bytes = json.dumps(
+        manifest,
+        allow_nan=False,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    manifest_path.write_bytes(manifest_bytes)
+    sidecar_path.write_text(
+        f"{hashlib.sha256(manifest_bytes).hexdigest()}\n",
+        encoding="ascii",
+    )
+
+
 class ImmutableArchiveWriteTest(unittest.TestCase):
+    def test_exports_typed_acquisition_completion_contract(self) -> None:
+        self.assertTrue(hasattr(archive_storage, "AcquisitionCompletion"))
+        self.assertTrue(hasattr(archive_storage, "AcquisitionTerminalStatus"))
+
+    def test_exports_failure_and_invalid_evidence_contract(self) -> None:
+        self.assertTrue(
+            hasattr(archive_storage.AcquisitionTerminalStatus, "FAILED")
+        )
+        self.assertTrue(
+            hasattr(archive_storage.AcquisitionTerminalStatus, "INVALID")
+        )
+        self.assertTrue(hasattr(archive_storage, "StoredFailureEvidence"))
+        self.assertTrue(
+            hasattr(ImmutableArchiveStorage, "write_failure_evidence")
+        )
+        self.assertTrue(
+            hasattr(ImmutableArchiveStorage, "verify_failure_evidence")
+        )
+        self.assertTrue(
+            hasattr(ImmutableArchiveStorage, "load_resumable_completion")
+        )
+
+    def test_write_archive_requires_completion_parameter(self) -> None:
+        parameter = inspect.signature(
+            ImmutableArchiveStorage.write_archive
+        ).parameters.get("completion")
+
+        self.assertIsNotNone(parameter)
+        self.assertIs(parameter.default, inspect.Parameter.empty)
+
+    def test_v2_manifest_preserves_request_lineage_and_completion(self) -> None:
+        raw_body = b'{"bars":[{"t":"2026-07-01T13:30:00Z"}]}'
+        cursor_sha256 = "b" * 64
+        capture = replace(
+            _capture(raw_body),
+            method="POST",
+            sanitized_url=(
+                "https://data.alpaca.markets/v2/stocks/AAPL/bars?"
+                f"timeframe=1Min&feed=iex&page_token_sha256={cursor_sha256}"
+            ),
+            query=(
+                ("timeframe", "1Min"),
+                ("feed", "iex"),
+                ("page_token_sha256", cursor_sha256),
+            ),
+            headers=(
+                ("content-type", "application/json"),
+                ("x-ratelimit-remaining", "199"),
+            ),
+        )
+        completion = _completion(1)
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            storage = ImmutableArchiveStorage(
+                Path(temporary_directory),
+                free_bytes=lambda _path: _AVAILABLE_BYTES,
+            )
+
+            stored = storage.write_archive(
+                scope=_scope(),
+                captures=(capture,),
+                rows=(_bar(capture.body_sha256),),
+                completion=completion,
+            )
+
+            manifest = json.loads(stored.manifest_path.read_bytes())
+            self.assertEqual(
+                manifest["schemaVersion"],
+                "rp001-s2-immutable-minute-archive.v2",
+            )
+            raw_artifact = manifest["rawArtifacts"][0]
+            self.assertEqual(raw_artifact["method"], "POST")
+            self.assertEqual(raw_artifact["sanitizedUrl"], capture.sanitized_url)
+            self.assertEqual(
+                raw_artifact["query"],
+                [
+                    {"name": "timeframe", "value": "1Min"},
+                    {"name": "feed", "value": "iex"},
+                    {"name": "page_token_sha256", "value": cursor_sha256},
+                ],
+            )
+            self.assertEqual(
+                raw_artifact["responseHeaders"],
+                [
+                    {"name": "content-type", "value": "application/json"},
+                    {"name": "x-ratelimit-remaining", "value": "199"},
+                ],
+            )
+            self.assertEqual(
+                manifest["acquisitionCompletion"],
+                {
+                    "requestedStartReached": True,
+                    "completionReason": "provider_terminal",
+                    "terminalStatus": "completed",
+                    "analysisRowCount": 1,
+                    "auditRowCount": 0,
+                    "returnedRowCount": 1,
+                },
+            )
+            storage.verify_archive(stored)
+
+    def test_v2_rejects_unsafe_or_inconsistent_sanitized_url(self) -> None:
+        raw_body = b'{"bars":[]}'
+        safe_query = (
+            ("timeframe", "1Min"),
+            ("page_token_sha256", "a" * 64),
+        )
+        unsafe_captures = (
+            replace(
+                _capture(raw_body),
+                sanitized_url=(
+                    "http://data.alpaca.markets/v2/stocks/AAPL/bars?"
+                    "timeframe=1Min&page_token_sha256=" + "a" * 64
+                ),
+                query=safe_query,
+            ),
+            replace(
+                _capture(raw_body),
+                sanitized_url=(
+                    "https://client:secret@data.alpaca.markets/"
+                    "v2/stocks/AAPL/bars?timeframe=1Min&"
+                    "page_token_sha256=" + "a" * 64
+                ),
+                query=safe_query,
+            ),
+            replace(
+                _capture(raw_body),
+                sanitized_url=(
+                    "https://data.alpaca.markets/v2/stocks/AAPL/bars?"
+                    "timeframe=1Min&page_token=raw-secret"
+                ),
+                query=safe_query,
+            ),
+            replace(
+                _capture(raw_body),
+                sanitized_url=(
+                    "https://data.alpaca.markets/v2/stocks/AAPL/bars?"
+                    "timeframe=1Min&page_token_sha256=" + "a" * 64 + "#secret"
+                ),
+                query=safe_query,
+            ),
+        )
+
+        for capture in unsafe_captures:
+            with self.subTest(sanitized_url=capture.sanitized_url):
+                with tempfile.TemporaryDirectory() as temporary_directory:
+                    root = Path(temporary_directory)
+                    storage = ImmutableArchiveStorage(
+                        root,
+                        free_bytes=lambda _path: _AVAILABLE_BYTES,
+                    )
+
+                    with self.assertRaisesRegex(
+                        ArchiveStorageError,
+                        "raw_capture_invalid",
+                    ):
+                        storage.write_archive(
+                            scope=_scope(),
+                            captures=(capture,),
+                            rows=(),
+                            completion=_completion(0),
+                        )
+
+                    self.assertFalse((root / _scope().acquisition_key).exists())
+
+    def test_completion_rejects_partial_collection_labeled_completed(self) -> None:
+        with self.assertRaisesRegex(
+            ArchiveStorageError,
+            "acquisition_completion_invalid",
+        ):
+            archive_storage.AcquisitionCompletion(
+                requested_start_reached=False,
+                completion_reason="provider_terminal_before_start",
+                terminal_status=archive_storage.AcquisitionTerminalStatus.COMPLETED,
+                analysis_row_count=1,
+                audit_row_count=0,
+                returned_row_count=1,
+            )
+
+    def test_completion_counts_must_match_terminal_status_and_rows(self) -> None:
+        invalid_values = (
+            {
+                "requested_start_reached": True,
+                "completion_reason": "provider_terminal",
+                "terminal_status": archive_storage.AcquisitionTerminalStatus.COMPLETED,
+                "analysis_row_count": 1,
+                "audit_row_count": 1,
+                "returned_row_count": 1,
+            },
+            {
+                "requested_start_reached": False,
+                "completion_reason": "data_unavailable",
+                "terminal_status": archive_storage.AcquisitionTerminalStatus.DATA_UNAVAILABLE,
+                "analysis_row_count": 1,
+                "audit_row_count": 0,
+                "returned_row_count": 1,
+            },
+            {
+                "requested_start_reached": True,
+                "completion_reason": "provider_terminal_before_start",
+                "terminal_status": archive_storage.AcquisitionTerminalStatus.PARTIAL,
+                "analysis_row_count": 1,
+                "audit_row_count": 0,
+                "returned_row_count": 1,
+            },
+        )
+        for invalid_value in invalid_values:
+            with self.subTest(invalid_value=invalid_value):
+                with self.assertRaisesRegex(
+                    ArchiveStorageError,
+                    "acquisition_completion_invalid",
+                ):
+                    archive_storage.AcquisitionCompletion(**invalid_value)
+
+        partial = archive_storage.AcquisitionCompletion(
+            requested_start_reached=False,
+            completion_reason="provider_terminal_before_start",
+            terminal_status=archive_storage.AcquisitionTerminalStatus.PARTIAL,
+            analysis_row_count=1,
+            audit_row_count=0,
+            returned_row_count=1,
+        )
+        self.assertEqual(
+            partial.terminal_status,
+            archive_storage.AcquisitionTerminalStatus.PARTIAL,
+        )
+
+    def test_failure_completion_requires_stable_reason_and_zero_counts(self) -> None:
+        for terminal_status, completion_reason in (
+            (
+                archive_storage.AcquisitionTerminalStatus.FAILED,
+                "TRANSPORT_ERROR",
+            ),
+            (
+                archive_storage.AcquisitionTerminalStatus.INVALID,
+                "CANONICAL_CONTRACT_INVALID",
+            ),
+            (
+                archive_storage.AcquisitionTerminalStatus.FAILED,
+                "measurement_failed",
+            ),
+        ):
+            with self.subTest(terminal_status=terminal_status):
+                completion = archive_storage.AcquisitionCompletion(
+                    requested_start_reached=False,
+                    completion_reason=completion_reason,
+                    terminal_status=terminal_status,
+                    analysis_row_count=0,
+                    audit_row_count=0,
+                    returned_row_count=0,
+                )
+                self.assertEqual(completion.terminal_status, terminal_status)
+
+        with self.assertRaisesRegex(
+            ArchiveStorageError,
+            "acquisition_completion_invalid",
+        ):
+            archive_storage.AcquisitionCompletion(
+                requested_start_reached=False,
+                completion_reason="TRANSPORT_ERROR",
+                terminal_status=archive_storage.AcquisitionTerminalStatus.FAILED,
+                analysis_row_count=1,
+                audit_row_count=0,
+                returned_row_count=1,
+            )
+
+    def test_completion_returned_count_must_match_canonical_rows(self) -> None:
+        capture = _capture(b'{"bars":[]}')
+        completion = archive_storage.AcquisitionCompletion(
+            requested_start_reached=True,
+            completion_reason="provider_terminal",
+            terminal_status=archive_storage.AcquisitionTerminalStatus.COMPLETED,
+            analysis_row_count=2,
+            audit_row_count=0,
+            returned_row_count=2,
+        )
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            storage = ImmutableArchiveStorage(
+                Path(temporary_directory),
+                free_bytes=lambda _path: _AVAILABLE_BYTES,
+            )
+
+            with self.assertRaisesRegex(
+                ArchiveStorageError,
+                "acquisition_completion_invalid",
+            ):
+                storage.write_archive(
+                    scope=_scope(),
+                    captures=(capture,),
+                    rows=(),
+                    completion=completion,
+                )
+
     def test_writes_lossless_raw_zstandard_and_decimal_parquet_with_lineage(self) -> None:
         raw_body = b'{"bars":[{"t":"2026-07-01T13:30:00Z","o":100.10}]}'
         capture = _capture(raw_body)
@@ -103,6 +442,7 @@ class ImmutableArchiveWriteTest(unittest.TestCase):
                 scope=_scope(),
                 captures=(capture,),
                 rows=(_bar(capture.body_sha256),),
+                completion=_completion(1),
             )
 
             compressed = stored.raw_paths[0].read_bytes()
@@ -184,6 +524,7 @@ class ImmutableArchiveWriteTest(unittest.TestCase):
                 scope=_scope(),
                 captures=(capture,),
                 rows=(bar,),
+                completion=_completion(1),
             )
 
             table = parquet.read_table(stored.canonical_path)
@@ -205,6 +546,7 @@ class ImmutableArchiveWriteTest(unittest.TestCase):
                 scope=_scope(),
                 captures=(capture,),
                 rows=(),
+                completion=_completion(0),
             )
 
             manifest_bytes = stored.manifest_path.read_bytes()
@@ -238,6 +580,7 @@ class ImmutableArchiveWriteTest(unittest.TestCase):
                     scope=_scope(),
                     captures=(capture,),
                     rows=(),
+                    completion=_completion(0),
                 )
                 manifests.append(stored.manifest_path.read_bytes())
 
@@ -256,6 +599,7 @@ class ImmutableArchiveWriteTest(unittest.TestCase):
                 scope=_scope(),
                 captures=(capture,),
                 rows=(),
+                completion=_completion(0),
             )
             before = {
                 path.relative_to(stored.archive_directory): hashlib.sha256(
@@ -270,6 +614,7 @@ class ImmutableArchiveWriteTest(unittest.TestCase):
                     scope=_scope(),
                     captures=(capture,),
                     rows=(),
+                    completion=_completion(0),
                 )
 
             self.assertEqual(raised.exception.code, "archive_already_exists")
@@ -305,6 +650,7 @@ class ImmutableArchiveWriteTest(unittest.TestCase):
                             scope=_scope(),
                             captures=(capture,),
                             rows=(),
+                            completion=_completion(0),
                         )
 
                     self.assertEqual(
@@ -326,6 +672,175 @@ class ImmutableArchiveWriteTest(unittest.TestCase):
 
 
 class ArchiveVerificationTest(unittest.TestCase):
+    def test_failure_evidence_is_separate_append_only_and_idempotent(self) -> None:
+        first = replace(
+            _capture(b'{"page":1,"bars":[]}'),
+            status=500,
+            headers=(
+                ("content-type", "application/json"),
+                ("x-ratelimit-remaining", "0"),
+            ),
+        )
+        second = replace(
+            _capture(b'{"page":2,"bars":[]}'),
+            sanitized_url=(
+                "https://data.alpaca.markets/v2/stocks/AAPL/bars?page_token=next"
+            ),
+            query=(("page_token", "next"),),
+        )
+        failed = archive_storage.AcquisitionCompletion(
+            requested_start_reached=False,
+            completion_reason="TRANSPORT_ERROR",
+            terminal_status=archive_storage.AcquisitionTerminalStatus.FAILED,
+            analysis_row_count=0,
+            audit_row_count=0,
+            returned_row_count=0,
+        )
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            storage = ImmutableArchiveStorage(
+                root,
+                free_bytes=lambda _path: _AVAILABLE_BYTES,
+            )
+
+            stored = storage.write_failure_evidence(
+                scope=_scope(),
+                captures=(first, second),
+                completion=failed,
+            )
+            before = {
+                path.relative_to(stored.evidence_directory): hashlib.sha256(
+                    path.read_bytes()
+                ).hexdigest()
+                for path in stored.evidence_directory.rglob("*")
+                if path.is_file()
+            }
+            repeated = storage.write_failure_evidence(
+                scope=_scope(),
+                captures=(first, second),
+                completion=failed,
+            )
+
+            self.assertEqual(repeated, stored)
+            self.assertEqual(
+                stored.evidence_directory,
+                root
+                / "failure-evidence"
+                / _scope().acquisition_key
+                / stored.evidence_digest,
+            )
+            self.assertFalse((root / _scope().acquisition_key).exists())
+            manifest = json.loads(stored.manifest_path.read_bytes())
+            self.assertEqual(
+                manifest["schemaVersion"],
+                "rp001-s2-immutable-minute-failure-evidence.v1",
+            )
+            self.assertEqual(manifest["evidenceDigest"], stored.evidence_digest)
+            self.assertEqual(
+                manifest["acquisitionCompletion"]["terminalStatus"],
+                "failed",
+            )
+            self.assertEqual(len(manifest["rawArtifacts"]), 2)
+            self.assertEqual(parquet.read_table(stored.canonical_path).num_rows, 0)
+            self.assertEqual(parquet.read_table(stored.occurrence_path).num_rows, 0)
+            after = {
+                path.relative_to(stored.evidence_directory): hashlib.sha256(
+                    path.read_bytes()
+                ).hexdigest()
+                for path in stored.evidence_directory.rglob("*")
+                if path.is_file()
+            }
+            self.assertEqual(after, before)
+            storage.verify_failure_evidence(stored)
+
+            invalid = archive_storage.AcquisitionCompletion(
+                requested_start_reached=False,
+                completion_reason="CANONICAL_CONTRACT_INVALID",
+                terminal_status=archive_storage.AcquisitionTerminalStatus.INVALID,
+                analysis_row_count=0,
+                audit_row_count=0,
+                returned_row_count=0,
+            )
+            distinct = storage.write_failure_evidence(
+                scope=_scope(),
+                captures=(first, second),
+                completion=invalid,
+            )
+            self.assertNotEqual(distinct.evidence_digest, stored.evidence_digest)
+            storage.verify_failure_evidence(distinct)
+
+    def test_only_v2_success_archive_has_resumable_completion(self) -> None:
+        capture = _capture(b'{"bars":[]}')
+        completion = _completion(0)
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            storage = ImmutableArchiveStorage(
+                Path(temporary_directory),
+                free_bytes=lambda _path: _AVAILABLE_BYTES,
+            )
+            stored = storage.write_archive(
+                scope=_scope(),
+                captures=(capture,),
+                rows=(),
+                completion=completion,
+            )
+
+            self.assertEqual(
+                storage.load_resumable_completion(stored),
+                completion,
+            )
+            _rewrite_manifest_as_v1(stored)
+            storage.verify_archive(stored)
+            with self.assertRaisesRegex(
+                ArchiveStorageError,
+                "archive_not_resumable",
+            ):
+                storage.load_resumable_completion(stored)
+
+    def test_success_archive_rejects_failure_terminal_status(self) -> None:
+        capture = _capture(b'{"bars":[]}')
+        failed = archive_storage.AcquisitionCompletion(
+            requested_start_reached=False,
+            completion_reason="TRANSPORT_ERROR",
+            terminal_status=archive_storage.AcquisitionTerminalStatus.FAILED,
+            analysis_row_count=0,
+            audit_row_count=0,
+            returned_row_count=0,
+        )
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            storage = ImmutableArchiveStorage(
+                Path(temporary_directory),
+                free_bytes=lambda _path: _AVAILABLE_BYTES,
+            )
+
+            with self.assertRaisesRegex(
+                ArchiveStorageError,
+                "acquisition_completion_invalid",
+            ):
+                storage.write_archive(
+                    scope=_scope(),
+                    captures=(capture,),
+                    rows=(),
+                    completion=failed,
+                )
+
+    def test_v1_manifest_fixture_remains_verifiable(self) -> None:
+        raw_body = b'{"bars":[{"t":"2026-07-01T13:30:00Z"}]}'
+        capture = _capture(raw_body)
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            storage = ImmutableArchiveStorage(
+                Path(temporary_directory),
+                free_bytes=lambda _path: _AVAILABLE_BYTES,
+            )
+            stored = storage.write_archive(
+                scope=_scope(),
+                captures=(capture,),
+                rows=(_bar(capture.body_sha256),),
+                completion=_completion(1),
+            )
+            _rewrite_manifest_as_v1(stored)
+
+            storage.verify_archive(stored)
+
     def test_detects_raw_canonical_and_manifest_modification(self) -> None:
         raw_body = b'{"bars":[{"t":"2026-07-01T13:30:00Z"}]}'
         for artifact_name in ("raw", "canonical", "occurrence", "manifest"):
@@ -340,6 +855,7 @@ class ArchiveVerificationTest(unittest.TestCase):
                         scope=_scope(),
                         captures=(capture,),
                         rows=(_bar(capture.body_sha256),),
+                        completion=_completion(1),
                     )
                     storage.verify_archive(stored)
                     artifact_path = {
@@ -373,6 +889,7 @@ class ArchiveResearchViewTest(unittest.TestCase):
                 scope=_scope(),
                 captures=(capture,),
                 rows=(_bar(capture.body_sha256),),
+                completion=_completion(1),
             )
             access = ResearchViewAccess(
                 sample_role=SampleRole.SEEN,
@@ -410,6 +927,7 @@ class ArchiveResearchViewTest(unittest.TestCase):
                 scope=_scope(),
                 captures=(first_capture, second_capture),
                 rows=(bar,),
+                completion=_completion(1),
             )
             access = ResearchViewAccess(
                 sample_role=SampleRole.SEEN,
@@ -460,6 +978,7 @@ class ArchiveResearchViewTest(unittest.TestCase):
                 scope=_scope(),
                 captures=(capture,),
                 rows=(_bar(capture.body_sha256),),
+                completion=_completion(1),
             )
             sealed = ResearchViewAccess(
                 sample_role=SampleRole.CONFIRMATION,
@@ -548,6 +1067,7 @@ class CanonicalMinuteBarValidationTest(unittest.TestCase):
                             scope=_scope(),
                             captures=(capture,),
                             rows=(invalid_bar,),
+                            completion=_completion(1),
                         )
 
         earlier = replace(
@@ -568,6 +1088,7 @@ class CanonicalMinuteBarValidationTest(unittest.TestCase):
                     scope=_scope(),
                     captures=(capture,),
                     rows=(valid, earlier),
+                    completion=_completion(2),
                 )
 
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -580,6 +1101,7 @@ class CanonicalMinuteBarValidationTest(unittest.TestCase):
                     scope=replace(_scope(), interval="1d"),
                     captures=(capture,),
                     rows=(valid,),
+                    completion=_completion(1),
                 )
 
 
