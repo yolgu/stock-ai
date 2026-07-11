@@ -48,12 +48,12 @@ _OTHER_HEADER = (
 )
 _COMMON_EQUITY_MARKERS = (
     "common stock",
-    "common shares",
+    "common share",
     "ordinary share",
 )
 _NON_COMMON_PATTERN = re.compile(
-    r"\b(?:warrants?|rights?|units?|preferred|depositary shares?|"
-    r"depository shares?|notes?|bonds?|debentures?)\b",
+    r"\b(?:warrants?|rights?|units?|depositary shares?|"
+    r"depository shares?|adrs?)\b",
     re.IGNORECASE,
 )
 _SYMBOL_PATTERN = re.compile(r"^[A-Z][A-Z0-9.-]{0,13}$")

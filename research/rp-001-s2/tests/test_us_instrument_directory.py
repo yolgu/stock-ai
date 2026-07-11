@@ -135,6 +135,42 @@ class UsInstrumentDirectoryTest(unittest.TestCase):
             InstrumentEligibility.EXCLUDED_NON_COMMON,
         )
 
+    def test_common_share_evidence_is_not_overridden_by_issuer_words(self) -> None:
+        nasdaq = _NASDAQ.replace(
+            b"AAPL|Apple Inc. - Common Stock|",
+            b"CCEC|Capital Clean Energy Carriers Corp. - Common Share|",
+        ).replace(
+            b"WARRW|Example Corp. - Warrant|",
+            b"PFBC|Preferred Bank - Common Stock|",
+        )
+        other = _OTHER.replace(
+            b"TSLA|Tesla, Inc. - Common Stock|N|TSLA|",
+            b"OBAI|Our Bond, Inc. - Common Stock|N|OBAI|",
+        ).replace(
+            b"PREFP|Example Corp. Preferred Stock|N|PREFP|",
+            b"BABA|Alibaba American Depositary Shares representing Common Shares|N|BABA|",
+        ).replace(
+            b"|N|100|N|TSLA",
+            b"|N|100|N|OBAI",
+        ).replace(
+            b"|N|100|N|PREFP",
+            b"|N|100|N|BABA",
+        )
+
+        directory = parse_us_instrument_directory(nasdaq, other)
+        by_symbol = {record.symbol: record for record in directory.records}
+
+        for symbol in ("CCEC", "PFBC", "OBAI"):
+            with self.subTest(symbol=symbol):
+                self.assertEqual(
+                    by_symbol[symbol].eligibility,
+                    InstrumentEligibility.COMMON_STOCK,
+                )
+        self.assertEqual(
+            by_symbol["BABA"].eligibility,
+            InstrumentEligibility.EXCLUDED_NON_COMMON,
+        )
+
     def test_live_collection_preserves_exact_raw_body_hash_and_received_time(self) -> None:
         opener = _Opener((_Response(_NASDAQ), _Response(_OTHER)))
         transport = StrictNasdaqDirectoryTransport(opener=opener)
