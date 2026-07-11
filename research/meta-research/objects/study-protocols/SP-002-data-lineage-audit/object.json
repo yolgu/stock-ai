@@ -1,0 +1,19 @@
+{
+  "schemaVersion": "research-object.v1",
+  "id": "SP-002",
+  "type": "StudyProtocol",
+  "title": "필수자료 계보·가용시점·권리 감사 사전등록",
+  "version": "1.0.1",
+  "lifecycleState": "preregistered",
+  "evidenceLevel": "conceptual",
+  "purpose": "공개 기술 문서와 저장소 경계만으로 8개 입력군의 현재 상태·허용 연구·차단효과를 판정하고, credential 회전과 보존권리 전에는 라이브 수집을 금지하는 규칙을 동결한다.",
+  "dependsOn": [
+    "DC-002",
+    "RQ-002"
+  ],
+  "artifacts": [
+    "research/meta-research/objects/study-protocols/SP-002-data-lineage-audit/protocol.md",
+    "research/meta-research/objects/study-protocols/SP-002-data-lineage-audit/protocol.sha256",
+    "research/rp-001/trials/ST-DAT-001.json"
+  ]
+}

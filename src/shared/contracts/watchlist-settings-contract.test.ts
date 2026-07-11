@@ -296,7 +296,37 @@ describe("watchlist and settings IPC contract", () => {
                 askBookPressure: 0,
                 volumeExpansion: 0.67,
                 score: 42,
-                label: "차익실현 압박 경계",
+                causes: {
+                  profitBurden: {
+                    status: "available",
+                    score: 74,
+                    label: "수익권 부담 높음",
+                    severity: "warning",
+                    reason: "수익권 물량과 VWAP/ATR 이격이 함께 큽니다."
+                  },
+                  realizedSellPressure: {
+                    status: "estimated",
+                    score: 18,
+                    label: "실제 매도 압력 낮음",
+                    severity: "positive",
+                    reason: "최근 체결 방향과 호가 잔량으로 추정합니다."
+                  },
+                  overheadSupplyPressure: {
+                    status: "available",
+                    score: 31,
+                    label: "위쪽 매물 부담 보통",
+                    severity: "neutral",
+                    reason: "현재가 위 거래량 부담을 ATR 기준으로 봅니다."
+                  },
+                  liquidityImpactRisk: {
+                    status: "available",
+                    score: 45,
+                    label: "체결 환경 위험 경계",
+                    severity: "warning",
+                    reason: "스프레드, 호가 깊이, 최근 가격충격으로 추정합니다."
+                  }
+                },
+                label: "차익실현 리스크 경계",
                 severity: "warning",
                 unavailableReason: null
               },
@@ -383,19 +413,19 @@ describe("watchlist and settings IPC contract", () => {
               },
               {
                 key: "profitTakingPressure",
-                title: "차익실현 압박 추정",
+                title: "차익실현 리스크",
                 source: "당일 1분봉 거래량 분포, VWAP, ATR, 체결 방향 추정, 호가 잔량",
                 originalFormula: [
-                  "차익실현 압박 점수 = 100 × 가중합(수익권 물량, VWAP/ATR 이격, 매도 체결 압력, 매도호가 압력, 거래량 확장)"
+                  "차익실현 리스크 = 0.35×수익권 부담 + 0.30×실제 매도 압력 + 0.25×위쪽 매물 부담 + 0.10×체결 환경 위험"
                 ],
                 substitutedFormula: [
-                  "점수 = 100 × (0.30×0.75 + 0.25×1.00 + 0.20×0.00 + 0.15×0.00 + 0.10×0.67)"
+                  "점수 = 0.35×74 + 0.30×18 + 0.25×31 + 0.10×45"
                 ],
-                result: ["차익실현 압박 점수 = 42점"],
+                result: ["차익실현 리스크 = 42점"],
                 inputs: [{ label: "수익권 물량 비율", value: "0.75" }],
-                meaning: "현재가보다 낮은 가격대에 쌓인 당일 거래량과 실제 매도 압력을 함께 보는 내부 추정 지표입니다.",
-                usage: "단기 참여자 다수가 수익권이고 매도 압력이 붙는지 확인합니다.",
-                judgment: "차익실현 압박 경계",
+                meaning: "수익권 물량, 실제 매도 압력, 위쪽 매물 부담, 체결 환경을 나눠 보는 내부 추정 지표입니다.",
+                usage: "점수 하나보다 어떤 원인이 리스크를 키우는지 확인합니다.",
+                judgment: "차익실현 리스크 경계",
                 caution: "표준 공식명이 아니며 매수·매도 추천으로 해석하지 않습니다.",
                 limitation: "표준 공식명이 아니라 앱 내부 추정 지표이며 실제 보유자 원가나 매도 의도를 알 수 없습니다."
               }
@@ -415,6 +445,10 @@ describe("watchlist and settings IPC contract", () => {
     expect(APP_RUNTIME_CONTRACT.errorCodes).toContain("quant_indicator_unavailable");
     expect(APP_RUNTIME_CONTRACT.errorCodes).toContain("quant_indicator_snapshot_not_found");
     expect(JSON.stringify(response)).toContain("profitTakingPressure");
+    expect(JSON.stringify(response)).toContain("profitBurden");
+    expect(JSON.stringify(response)).toContain("realizedSellPressure");
+    expect(JSON.stringify(response)).toContain("overheadSupplyPressure");
+    expect(JSON.stringify(response)).toContain("liquidityImpactRisk");
     expect(JSON.stringify(response)).toContain("conditionStrengthPercent");
     expect(JSON.stringify(response)).not.toContain("conditionProbabilityPercent");
     expect(JSON.stringify(response)).not.toContain("access_token");

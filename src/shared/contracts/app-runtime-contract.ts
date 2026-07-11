@@ -496,6 +496,27 @@ export interface SupplyPressureIndicatorPayload {
   unavailableReason: string | null;
 }
 
+export type ProfitTakingPressureCauseKey =
+  | "profitBurden"
+  | "realizedSellPressure"
+  | "overheadSupplyPressure"
+  | "liquidityImpactRisk";
+
+export interface ProfitTakingPressureCausePayload {
+  status: QuantIndicatorCalculationStatus;
+  score: number | null;
+  label: string;
+  severity: QuantIndicatorSeverity;
+  reason: string | null;
+}
+
+export interface ProfitTakingPressureCausesPayload {
+  profitBurden: ProfitTakingPressureCausePayload;
+  realizedSellPressure: ProfitTakingPressureCausePayload;
+  overheadSupplyPressure: ProfitTakingPressureCausePayload;
+  liquidityImpactRisk: ProfitTakingPressureCausePayload;
+}
+
 export interface ProfitTakingPressureIndicatorPayload {
   status: "available" | "unavailable";
   profitLongRatio: number | null;
@@ -505,6 +526,7 @@ export interface ProfitTakingPressureIndicatorPayload {
   askBookPressure: number | null;
   volumeExpansion: number | null;
   score: number | null;
+  causes: ProfitTakingPressureCausesPayload;
   label: string;
   severity: QuantIndicatorSeverity;
   unavailableReason: string | null;

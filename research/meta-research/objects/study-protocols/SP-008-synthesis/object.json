@@ -1,0 +1,19 @@
+{
+  "schemaVersion": "research-object.v1",
+  "id": "SP-008",
+  "type": "StudyProtocol",
+  "title": "독립 외부표본 20거래일 통합 연구 프로토콜",
+  "version": "1.0.0",
+  "lifecycleState": "proposed",
+  "evidenceLevel": "conceptual",
+  "purpose": "Gate 통과 독립 external OOF 연구만 결합한 20거래일 비용·위험조정 효용을 네 기준선과 비교하는 통합·반증·중단·공개 규칙을 고정한다.",
+  "dependsOn": [
+    "DC-008",
+    "RQ-008"
+  ],
+  "artifacts": [
+    "research/meta-research/objects/study-protocols/SP-008-synthesis/protocol.md",
+    "research/meta-research/objects/study-protocols/SP-008-synthesis/protocol.sha256",
+    "research/rp-001/trials/ST-SYN-001.json"
+  ]
+}

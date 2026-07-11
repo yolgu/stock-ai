@@ -378,7 +378,8 @@ export function AppShell({
                 viewModel={createWatchStockCardViewModel({
                   card,
                   marketDataSnapshot: marketData.snapshotsByCardId[card.id] ?? null,
-                  quantIndicatorSnapshot: quantIndicators.snapshotsByCardId[card.id] ?? null
+                  quantIndicatorSnapshot: quantIndicators.snapshotsByCardId[card.id] ?? null,
+                  quantIndicatorStatus: quantIndicators.status
                 })}
                 key={card.id}
                 onArchive={() => void watchlist.archiveCard(card.id)}
@@ -399,7 +400,8 @@ export function AppShell({
                     card: selectedCard,
                     marketDataSnapshot: marketData.snapshotsByCardId[selectedCard.id] ?? null,
                     quantIndicatorSnapshot:
-                      quantIndicators.snapshotsByCardId[selectedCard.id] ?? null
+                      quantIndicators.snapshotsByCardId[selectedCard.id] ?? null,
+                    quantIndicatorStatus: quantIndicators.status
                   })}
                   onClose={() => setSelectedCardId(null)}
                   onSave={(input) => void watchlist.updateCard(selectedCard.id, input)}
@@ -718,6 +720,11 @@ function WatchStockDetailPanel({
           />
         </section>
 
+        <section className="detail-section" aria-labelledby="profit-taking-risk-heading">
+          <h3 id="profit-taking-risk-heading">{viewModel.profitTakingRisk.title}</h3>
+          <ProfitTakingRiskView profitTakingRisk={viewModel.profitTakingRisk} />
+        </section>
+
         <section className="detail-section" aria-labelledby="conditional-zone-heading">
           <h3 id="conditional-zone-heading">조건부 구간</h3>
           <ConditionalZoneView zones={viewModel.conditionalZones} />
@@ -830,6 +837,38 @@ function QuantChecklistView({
           </article>
         );
       })}
+    </div>
+  );
+}
+
+interface ProfitTakingRiskViewProps {
+  profitTakingRisk: DetailPanelViewModel["profitTakingRisk"];
+}
+
+function ProfitTakingRiskView({
+  profitTakingRisk
+}: ProfitTakingRiskViewProps): ReactElement {
+  return (
+    <div className={`profit-taking-risk profit-taking-risk--${profitTakingRisk.severity}`}>
+      <div className="profit-taking-risk__summary">
+        <strong>{profitTakingRisk.scoreLabel}</strong>
+        <span>{profitTakingRisk.statusLabel}</span>
+      </div>
+      <p>{profitTakingRisk.summary}</p>
+      <div className="profit-taking-risk__causes">
+        {profitTakingRisk.causes.map((cause) => (
+          <article
+            className={`profit-taking-cause profit-taking-cause--${cause.severity}`}
+            key={cause.key}
+          >
+            <div>
+              <strong>{cause.label}</strong>
+              <span>{cause.statusLabel}</span>
+            </div>
+            <b>{cause.scoreLabel}</b>
+          </article>
+        ))}
+      </div>
     </div>
   );
 }

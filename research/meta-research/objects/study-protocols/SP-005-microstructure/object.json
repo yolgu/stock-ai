@@ -1,0 +1,20 @@
+{
+  "schemaVersion": "research-object.v1",
+  "id": "SP-005",
+  "type": "StudyProtocol",
+  "title": "순서보존 미시구조 60초 예측 연구 프로토콜",
+  "version": "1.0.0",
+  "lifecycleState": "proposed",
+  "evidenceLevel": "conceptual",
+  "purpose": "순서보존 미시구조 후보의 60초 signed midquote markout OOF 제곱오차 개선을 가격이력 기준선과 비교하는 후보·분할·반증·중단·공개 규칙을 고정한다.",
+  "dependsOn": [
+    "DC-005",
+    "RQ-005"
+  ],
+  "artifacts": [
+    "research/meta-research/objects/study-protocols/SP-005-microstructure/protocol.md",
+    "research/meta-research/objects/study-protocols/SP-005-microstructure/protocol.sha256",
+    "research/rp-001/trials/ST-MIC-001.json"
+  ]
+}
+

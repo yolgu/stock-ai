@@ -103,9 +103,39 @@ describe("createQuantIndicatorSnapshot", () => {
           sellFlowPressure: 0,
           askBookPressure: 0,
           volumeExpansion: 0.38,
-          score: 59,
-          label: "차익실현 압박 경계",
-          severity: "warning"
+          score: 65,
+          label: "차익실현 리스크 높음",
+          severity: "warning",
+          causes: {
+            profitBurden: {
+              status: "available",
+              score: 100,
+              label: "수익권 부담 매우 높음",
+              severity: "danger",
+              reason: "수익권 물량과 VWAP/ATR 이격이 함께 큽니다."
+            },
+            realizedSellPressure: {
+              status: "estimated",
+              score: 3,
+              label: "실제 매도 압력 낮음",
+              severity: "positive",
+              reason: "최근 체결 방향과 호가 잔량으로 추정합니다."
+            },
+            overheadSupplyPressure: {
+              status: "available",
+              score: 0,
+              label: "위쪽 매물 부담 낮음",
+              severity: "positive",
+              reason: "현재가 위 거래량 부담을 ATR 기준으로 봅니다."
+            },
+            liquidityImpactRisk: {
+              status: "available",
+              score: 56,
+              label: "체결 환경 위험 경계",
+              severity: "warning",
+              reason: "스프레드, 호가 깊이, 최근 가격충격으로 추정합니다."
+            }
+          }
         },
         riskReward: {
           status: "available",
@@ -118,7 +148,7 @@ describe("createQuantIndicatorSnapshot", () => {
       expect.arrayContaining([
         expect.objectContaining({ key: "vwap", label: "VWAP 위 안착" }),
         expect.objectContaining({ key: "cvd", status: "estimated" }),
-        expect.objectContaining({ key: "profitTakingPressure", label: "차익실현 압박 경계" })
+        expect.objectContaining({ key: "profitTakingPressure", label: "차익실현 리스크 높음" })
       ])
     );
     const explanationTraces = snapshot.explanationTraces as Array<Record<string, unknown>>;
@@ -140,11 +170,17 @@ describe("createQuantIndicatorSnapshot", () => {
     });
     expect(profitTakingPressureTrace).toMatchObject({
       key: "profitTakingPressure",
-      title: "차익실현 압박 추정",
+      title: "차익실현 리스크",
       originalFormula: expect.arrayContaining([
-        "차익실현 압박 점수 = 100 × 가중합(수익권 물량, VWAP/ATR 이격, 매도 체결 압력, 매도호가 압력, 거래량 확장)"
+        "차익실현 리스크 = 0.35×수익권 부담 + 0.30×실제 매도 압력 + 0.25×위쪽 매물 부담 + 0.10×체결 환경 위험"
       ]),
-      result: expect.arrayContaining(["차익실현 압박 점수 = 59점"]),
+      result: expect.arrayContaining([
+        "차익실현 리스크 = 65점",
+        "수익권 부담 = 100점",
+        "실제 매도 압력 = 3점",
+        "위쪽 매물 부담 = 0점",
+        "체결 환경 위험 = 56점"
+      ]),
       limitation: "표준 공식명이 아니라 앱 내부 추정 지표이며 실제 보유자 원가나 매도 의도를 알 수 없습니다."
     });
   });
@@ -255,8 +291,8 @@ describe("createQuantIndicatorSnapshot", () => {
         profitTakingPressure: {
           status: "available",
           profitLongRatio: 0.95,
-          score: 59,
-          label: "차익실현 압박 경계",
+          score: 65,
+          label: "차익실현 리스크 높음",
           severity: "warning"
         },
         marketSentimentScore: {
@@ -292,7 +328,7 @@ describe("createQuantIndicatorSnapshot", () => {
     });
   });
 
-  it("caps composite score when a danger indicator would otherwise be averaged away", () => {
+  it("raises the composite score when realized selling pressure confirms large profit burden", () => {
     const snapshot = createQuantIndicatorSnapshot({
       marketDataSnapshot: createStrongProfitTakingPressureSnapshot(),
       calculatedAt: "2026-07-06T09:50:00.000Z"
@@ -302,9 +338,19 @@ describe("createQuantIndicatorSnapshot", () => {
       indicators: {
         profitTakingPressure: {
           status: "available",
-          score: 92,
-          label: "차익실현 압박 강함",
-          severity: "danger"
+          score: 75,
+          label: "차익실현 리스크 높음",
+          severity: "warning",
+          causes: {
+            profitBurden: {
+              score: 100,
+              label: "수익권 부담 매우 높음"
+            },
+            realizedSellPressure: {
+              score: 96,
+              label: "실제 매도 압력 매우 높음"
+            }
+          }
         },
         marketSentimentScore: {
           status: "available",
@@ -316,7 +362,7 @@ describe("createQuantIndicatorSnapshot", () => {
     });
   });
 
-  it("keeps overhead supply separate from profit taking pressure", () => {
+  it("keeps overhead supply as a cause without turning it into realized profit taking pressure", () => {
     const snapshot = createQuantIndicatorSnapshot({
       marketDataSnapshot: createOverheadSupplyWithoutProfitTakingSnapshot(),
       calculatedAt: "2026-07-06T09:35:00.000Z"
@@ -333,15 +379,29 @@ describe("createQuantIndicatorSnapshot", () => {
         profitTakingPressure: {
           status: "available",
           profitLongRatio: 0.25,
-          score: 14,
-          label: "차익실현 압박 낮음",
-          severity: "positive"
+          score: 65,
+          label: "차익실현 리스크 높음",
+          severity: "warning",
+          causes: {
+            profitBurden: {
+              score: 19,
+              label: "수익권 부담 낮음"
+            },
+            realizedSellPressure: {
+              score: 20,
+              label: "실제 매도 압력 낮음"
+            },
+            overheadSupplyPressure: {
+              score: 85,
+              label: "위쪽 매물 부담 매우 높음"
+            }
+          }
         }
       }
     });
   });
 
-  it("uses a simple profit-taking pressure formula when trade flow and orderbook are unavailable", () => {
+  it("keeps a partial score when trade flow and orderbook causes are unavailable", () => {
     const snapshot = createQuantIndicatorSnapshot({
       marketDataSnapshot: createProfitTakingPressureWithoutFlowSnapshot(),
       calculatedAt: "2026-07-06T09:35:00.000Z"
@@ -355,9 +415,25 @@ describe("createQuantIndicatorSnapshot", () => {
           vwapAtrExtension: 1,
           sellFlowPressure: 0,
           askBookPressure: 0,
-          score: 100,
-          label: "차익실현 압박 강함",
-          severity: "danger"
+          score: 65,
+          label: "차익실현 리스크 높음",
+          severity: "warning",
+          causes: {
+            profitBurden: {
+              status: "available",
+              score: 100
+            },
+            realizedSellPressure: {
+              status: "unavailable",
+              score: null,
+              label: "실제 매도 압력 계산 불가"
+            },
+            liquidityImpactRisk: {
+              status: "estimated",
+              score: 49,
+              label: "체결 환경 위험 경계"
+            }
+          }
         }
       }
     });

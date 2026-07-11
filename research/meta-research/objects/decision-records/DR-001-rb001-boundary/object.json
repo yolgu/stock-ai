@@ -1,0 +1,18 @@
+{
+  "schemaVersion": "research-object.v1",
+  "id": "DR-001",
+  "type": "DecisionRecord",
+  "title": "RB-001 연구 사용 경계",
+  "version": "1.0.0",
+  "lifecycleState": "completed",
+  "evidenceLevel": "exploratory",
+  "purpose": "RB-001의 허용된 연구 용도와 금지된 성능·재현성·운영 주장을 고정한다.",
+  "dependsOn": [
+    "EB-001",
+    "RB-001"
+  ],
+  "artifacts": [
+    "research/meta-research/objects/decision-records/DR-001-rb001-boundary/decision.md",
+    "research/meta-research/objects/decision-records/DR-001-rb001-boundary/boundary-contract.json"
+  ]
+}

@@ -1,0 +1,32 @@
+{
+  "schemaVersion": "research-object.v1",
+  "id": "RP-001",
+  "type": "ResearchProgram",
+  "title": "정량 시장행동·상대가치·실행 연구 프로그램",
+  "version": "1.0.0",
+  "lifecycleState": "proposed",
+  "evidenceLevel": "conceptual",
+  "purpose": "행동국면·상대가치·미시구조·체결비용·꼬리위험을 독립 검증하고 마지막 단계에서만 순기대가치 의사결정으로 통합한다.",
+  "dependsOn": [
+    "MC-001",
+    "MS-001",
+    "RB-001"
+  ],
+  "artifacts": [
+    "research/meta-research/objects/programs/RP-001-quantitative-market-behavior/README.md",
+    "research/meta-research/objects/programs/RP-001-quantitative-market-behavior/candidate-registry.json",
+    "research/meta-research/objects/programs/RP-001-quantitative-market-behavior/goal-v1.0.md",
+    "research/meta-research/objects/programs/RP-001-quantitative-market-behavior/integration-contract.md",
+    "research/meta-research/objects/programs/RP-001-quantitative-market-behavior/question-map.md",
+    "research/meta-research/objects/programs/RP-001-quantitative-market-behavior/requirements.json",
+    "research/meta-research/objects/programs/RP-001-quantitative-market-behavior/seen-data-register.json",
+    "research/meta-research/objects/programs/RP-001-quantitative-market-behavior/source-matrix.json",
+    "research/meta-research/objects/programs/RP-001-quantitative-market-behavior/source-matrix.md",
+    "research/meta-research/objects/programs/RP-001-quantitative-market-behavior/state-ontology.json",
+    "research/meta-research/objects/programs/RP-001-quantitative-market-behavior/state-ontology.md",
+    "research/meta-research/objects/programs/RP-001-quantitative-market-behavior/study-contracts.json",
+    "research/meta-research/objects/programs/RP-001-quantitative-market-behavior/study-portfolio.md",
+    "research/meta-research/objects/programs/RP-001-quantitative-market-behavior/study-registry.json",
+    "research/meta-research/objects/programs/RP-001-quantitative-market-behavior/traceability.json"
+  ]
+}

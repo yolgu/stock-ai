@@ -1,0 +1,18 @@
+{
+  "schemaVersion": "research-object.v1",
+  "id": "EB-001",
+  "type": "EvidenceBundle",
+  "title": "RB-001 무결성 관찰 감사",
+  "version": "1.0.0",
+  "lifecycleState": "completed",
+  "evidenceLevel": "exploratory",
+  "purpose": "RB-001에서 관찰된 manifest·runner 변이를 append-only 근거로 보존하고 사용 한계를 고정한다.",
+  "dependsOn": [
+    "RB-001"
+  ],
+  "artifacts": [
+    "research/meta-research/objects/evidence-bundles/EB-001-rb001-integrity-audit/evidence.md",
+    "research/meta-research/objects/evidence-bundles/EB-001-rb001-integrity-audit/integrity-observations.json",
+    "research/meta-research/objects/evidence-bundles/EB-001-rb001-integrity-audit/current-input-bindings.json"
+  ]
+}

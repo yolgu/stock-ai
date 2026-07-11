@@ -1,0 +1,16 @@
+{
+  "schemaVersion": "research-object.v1",
+  "id": "RQ-006",
+  "type": "ResearchQuestion",
+  "title": "의사결정 후 5분 실행 NetEdge 분포",
+  "version": "1.0.0",
+  "lifecycleState": "proposed",
+  "evidenceLevel": "conceptual",
+  "purpose": "의사결정부터 5분까지 partial fill과 reject를 포함한 fill-weighted NetEdge 기대분포가 NoTrade보다 양수인지 식별한다.",
+  "dependsOn": [
+    "RP-001"
+  ],
+  "artifacts": [
+    "research/meta-research/objects/research-questions/RQ-006-execution-cost/question.md"
+  ]
+}

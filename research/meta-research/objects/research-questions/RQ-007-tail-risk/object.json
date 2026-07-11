@@ -1,0 +1,16 @@
+{
+  "schemaVersion": "research-object.v1",
+  "id": "RQ-007",
+  "type": "ResearchQuestion",
+  "title": "비용 결합 신호의 20거래일 꼬리위험 효용 증분",
+  "version": "1.0.0",
+  "lifecycleState": "proposed",
+  "evidenceLevel": "conceptual",
+  "purpose": "적격 외부표본 신호와 실행비용 분포를 결합한 향후 20거래일 효용이 NoTrade와 사전고정 단순 위험 기준선보다 큰지 식별한다.",
+  "dependsOn": [
+    "RP-001"
+  ],
+  "artifacts": [
+    "research/meta-research/objects/research-questions/RQ-007-tail-risk/question.md"
+  ]
+}

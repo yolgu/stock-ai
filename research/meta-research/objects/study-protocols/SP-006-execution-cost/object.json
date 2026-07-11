@@ -1,0 +1,19 @@
+{
+  "schemaVersion": "research-object.v1",
+  "id": "SP-006",
+  "type": "StudyProtocol",
+  "title": "5분 실행 NetEdge 분포 연구 프로토콜",
+  "version": "1.0.0",
+  "lifecycleState": "proposed",
+  "evidenceLevel": "conceptual",
+  "purpose": "의사결정 후 5분 fill-weighted NetEdge 기대분포를 NoTrade와 비교하는 후보·분할·반증·중단·공개 규칙을 고정한다.",
+  "dependsOn": [
+    "DC-006",
+    "RQ-006"
+  ],
+  "artifacts": [
+    "research/meta-research/objects/study-protocols/SP-006-execution-cost/protocol.md",
+    "research/meta-research/objects/study-protocols/SP-006-execution-cost/protocol.sha256",
+    "research/rp-001/trials/ST-EXE-001.json"
+  ]
+}

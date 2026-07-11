@@ -1,0 +1,17 @@
+{
+  "schemaVersion": "research-object.v1",
+  "id": "RQ-005",
+  "type": "ResearchQuestion",
+  "title": "순서보존 미시구조의 60초 markout 예측 증분",
+  "version": "1.0.0",
+  "lifecycleState": "proposed",
+  "evidenceLevel": "conceptual",
+  "purpose": "순서보존 OFI·depth·spread·cancel·aggressor·Hawkes 정보가 가격이력 기준선보다 event 후 60초 signed midquote markout의 외부표본 제곱오차를 낮추는지 식별한다.",
+  "dependsOn": [
+    "RP-001"
+  ],
+  "artifacts": [
+    "research/meta-research/objects/research-questions/RQ-005-microstructure/question.md"
+  ]
+}
+

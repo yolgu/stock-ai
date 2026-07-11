@@ -13,6 +13,7 @@ import type {
 } from "../shared/contracts/app-runtime-contract";
 import { AppShell } from "./AppShell";
 import { StartupStateView } from "./StartupStateView";
+import { useQuantIndicators } from "./useQuantIndicators";
 
 const runtimeProfile: RuntimeProfileDto = {
   runtimeMode: "desktop",
@@ -64,6 +65,8 @@ const riskCard: WatchStockCardDto = {
   createdAt: "2026-07-06T09:00:00.000Z",
   updatedAt: "2026-07-06T09:00:00.000Z"
 };
+
+const sampleActiveCards = [sampleCard];
 
 const sampleMarketDataSnapshot: MarketDataSnapshotPayload = {
   snapshotId: "snapshot-1",
@@ -179,7 +182,37 @@ const sampleQuantIndicatorSnapshot: QuantIndicatorSnapshotPayload = {
       askBookPressure: 0,
       volumeExpansion: 0.67,
       score: 42,
-      label: "차익실현 압박 경계",
+      causes: {
+        profitBurden: {
+          status: "available",
+          score: 74,
+          label: "수익권 부담 높음",
+          severity: "warning",
+          reason: "수익권 물량과 VWAP/ATR 이격이 함께 큽니다."
+        },
+        realizedSellPressure: {
+          status: "estimated",
+          score: 18,
+          label: "실제 매도 압력 낮음",
+          severity: "positive",
+          reason: "최근 체결 방향과 호가 잔량으로 추정합니다."
+        },
+        overheadSupplyPressure: {
+          status: "available",
+          score: 31,
+          label: "위쪽 매물 부담 보통",
+          severity: "neutral",
+          reason: "현재가 위 거래량 부담을 ATR 기준으로 봅니다."
+        },
+        liquidityImpactRisk: {
+          status: "available",
+          score: 45,
+          label: "체결 환경 위험 경계",
+          severity: "warning",
+          reason: "스프레드, 호가 깊이, 최근 가격충격으로 추정합니다."
+        }
+      },
+      label: "차익실현 리스크 경계",
       severity: "warning",
       unavailableReason: null
     },
@@ -249,7 +282,7 @@ const sampleQuantIndicatorSnapshot: QuantIndicatorSnapshotPayload = {
     },
     {
       key: "profitTakingPressure",
-      label: "차익실현 압박 경계",
+      label: "차익실현 리스크 경계",
       severity: "warning",
       status: "available",
       reason: null
@@ -309,22 +342,28 @@ const sampleQuantIndicatorSnapshot: QuantIndicatorSnapshotPayload = {
     },
     {
       key: "profitTakingPressure",
-      title: "차익실현 압박 추정",
+      title: "차익실현 리스크",
       source: "당일 1분봉 거래량 분포, VWAP, ATR, 체결 방향 추정, 호가 잔량",
       originalFormula: [
-        "차익실현 압박 점수 = 100 × 가중합(수익권 물량, VWAP/ATR 이격, 매도 체결 압력, 매도호가 압력, 거래량 확장)"
+        "차익실현 리스크 = 0.35×수익권 부담 + 0.30×실제 매도 압력 + 0.25×위쪽 매물 부담 + 0.10×체결 환경 위험"
       ],
       substitutedFormula: [
-        "점수 = 100 × (0.30×0.75 + 0.25×1.00 + 0.20×0.00 + 0.15×0.00 + 0.10×0.67)"
+        "점수 = 0.35×74 + 0.30×18 + 0.25×31 + 0.10×45"
       ],
-      result: ["차익실현 압박 점수 = 42점"],
+      result: [
+        "차익실현 리스크 = 42점",
+        "수익권 부담 = 74점",
+        "실제 매도 압력 = 18점",
+        "위쪽 매물 부담 = 31점",
+        "체결 환경 위험 = 45점"
+      ],
       inputs: [
         { label: "수익권 물량 비율", value: "0.75" },
         { label: "VWAP/ATR 이격", value: "1.00" }
       ],
-      meaning: "현재가보다 낮은 가격대에 쌓인 당일 거래량과 실제 매도 압력을 함께 보는 내부 추정 지표입니다.",
-      usage: "단기 참여자 다수가 수익권이고 매도 압력이 붙는지 확인합니다.",
-      judgment: "차익실현 압박 경계",
+      meaning: "수익권 물량, 실제 매도 압력, 위쪽 매물 부담, 체결 환경을 나눠 보는 내부 추정 지표입니다.",
+      usage: "점수 하나보다 어떤 원인이 리스크를 키우는지 확인합니다.",
+      judgment: "차익실현 리스크 경계",
       caution: "표준 공식명이 아니며 매수·매도 추천으로 해석하지 않습니다.",
       limitation: "표준 공식명이 아니라 앱 내부 추정 지표이며 실제 보유자 원가나 매도 의도를 알 수 없습니다."
     }
@@ -567,6 +606,32 @@ function createTossSettingsClient(status?: TossCredentialStatusPayload) {
       return currentStatus;
     }
   };
+}
+
+function QuantIndicatorStateHarness({
+  quantIndicatorClient,
+  credentials
+}: {
+  quantIndicatorClient: QuantIndicatorClient;
+  credentials: TossCredentialStatusPayload;
+}) {
+  const quantIndicators = useQuantIndicators(quantIndicatorClient, {
+    activeCards: sampleActiveCards,
+    credentials,
+    marketDataStatus: "ready"
+  });
+  const score =
+    quantIndicators.snapshotsByCardId["card-1"]?.indicators.profitTakingPressure.score ?? "--";
+
+  return (
+    <section aria-label="정량 지표 테스트 하네스">
+      <p>{quantIndicators.status}</p>
+      <p>{score}</p>
+      <button type="button" onClick={() => void quantIndicators.refreshNow()}>
+        정량 지표 다시 계산
+      </button>
+    </section>
+  );
 }
 
 describe("StartupStateView", () => {
@@ -828,8 +893,92 @@ describe("AppShell", () => {
     expect(screen.getByText("지표 업데이트 09:00:06")).toBeVisible();
     expect(screen.getByText("VWAP 위 안착 ($101.75)")).toBeVisible();
     expect(screen.getByText("체결 압력 우위 (45)")).toBeVisible();
-    expect(screen.getByText("차익실현 압박 경계 (42점)")).toBeVisible();
+    expect(screen.getByText("차익실현 리스크 경계 (42점)")).toBeVisible();
     expect(screen.queryByText("101.7500")).not.toBeInTheDocument();
+  });
+
+  it("shows a calculation state before the first profit taking risk score exists", async () => {
+    let resolveQuantRefresh: (
+      value: Awaited<ReturnType<QuantIndicatorClient["refreshWatchlist"]>>
+    ) => void = () => undefined;
+    const pendingQuantRefresh = new Promise<
+      Awaited<ReturnType<QuantIndicatorClient["refreshWatchlist"]>>
+    >((resolve) => {
+      resolveQuantRefresh = resolve;
+    });
+    const quantIndicatorClient = createQuantIndicatorClient({
+      refreshWatchlist: vi.fn(() => pendingQuantRefresh)
+    });
+
+    render(
+      <AppShell
+        runtimeProfile={runtimeProfile}
+        watchlistClient={createWatchlistClient([sampleCard])}
+        stockReferenceClient={createStockReferenceClient()}
+        marketDataClient={createMarketDataClient()}
+        quantIndicatorClient={quantIndicatorClient}
+        tossSettingsClient={createTossSettingsClient(validTossCredentialStatus)}
+      />
+    );
+
+    await waitFor(() => {
+      expect(quantIndicatorClient.refreshWatchlist).toHaveBeenCalledWith({
+        cardIds: ["card-1"]
+      });
+    });
+
+    expect(screen.getByText("계산 중")).toBeVisible();
+    expect(screen.getByText("차익실현 리스크 계산 중")).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "MU 마이크론 상세 보기" }));
+    expect(screen.getByRole("heading", { name: "차익실현 리스크" })).toBeVisible();
+    expect(screen.getAllByText("--")[0]).toBeVisible();
+
+    resolveQuantRefresh({
+      refreshedAt: "2026-07-06T09:00:06.000Z",
+      snapshots: [sampleQuantIndicatorSnapshot]
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText("지표 업데이트 09:00:06")).toBeVisible();
+    });
+  });
+
+  it("keeps the previous quant snapshot when a later refresh fails", async () => {
+    let rejectSecondRefresh: (reason?: unknown) => void = () => undefined;
+    const secondRefresh = new Promise<
+      Awaited<ReturnType<QuantIndicatorClient["refreshWatchlist"]>>
+    >((_, reject) => {
+      rejectSecondRefresh = reject;
+    });
+    const quantIndicatorClient = createQuantIndicatorClient({
+      refreshWatchlist: vi.fn()
+        .mockResolvedValueOnce({
+          refreshedAt: "2026-07-06T09:00:06.000Z",
+          snapshots: [sampleQuantIndicatorSnapshot]
+        })
+        .mockReturnValueOnce(secondRefresh)
+    });
+
+    render(
+      <QuantIndicatorStateHarness
+        quantIndicatorClient={quantIndicatorClient}
+        credentials={validTossCredentialStatus}
+      />
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText("ready")).toBeVisible();
+      expect(screen.getByText("42")).toBeVisible();
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "정량 지표 다시 계산" }));
+    expect(screen.getByText("refreshing")).toBeVisible();
+
+    rejectSecondRefresh(new Error("정량 지표 계산 지연"));
+    await waitFor(() => {
+      expect(screen.getByText("failedRefresh")).toBeVisible();
+      expect(screen.getByText("42")).toBeVisible();
+    });
   });
 
   it("does not add value parentheses when a signal has no calculated final value", async () => {
@@ -972,8 +1121,17 @@ describe("AppShell", () => {
     expect(screen.getByText("상방 이격 (172bp)")).toBeVisible();
     expect(screen.getByText("모멘텀 양호 (58.25)")).toBeVisible();
     expect(screen.getByText("손절 폭 정상 (0.97%)")).toBeVisible();
-    expect(screen.getByText("매물대 부담 낮음 (0.00)")).toBeVisible();
-    expect(screen.getAllByText("차익실현 압박 경계 (42점)")).toHaveLength(2);
+    expect(screen.queryByText("매물대 부담 낮음 (0.00)")).not.toBeInTheDocument();
+    expect(screen.getAllByText("차익실현 리스크 경계 (42점)")).toHaveLength(2);
+    expect(screen.getByRole("heading", { name: "차익실현 리스크" })).toBeVisible();
+    expect(screen.getByText("수익권 부담")).toBeVisible();
+    expect(screen.getByText("74점")).toBeVisible();
+    expect(screen.getByText("실제 매도 압력")).toBeVisible();
+    expect(screen.getByText("18점")).toBeVisible();
+    expect(screen.getByText("위쪽 매물 부담")).toBeVisible();
+    expect(screen.getByText("31점")).toBeVisible();
+    expect(screen.getByText("체결 환경 위험")).toBeVisible();
+    expect(screen.getByText("45점")).toBeVisible();
     expect(screen.getByText("손익비 1.5x 이상 (4.50x)")).toBeVisible();
     expect(screen.getByText("정량 심리 우호 (82점)")).toBeVisible();
     expect(screen.getByText("조건 충족 강함 (96.08%)")).toBeVisible();
@@ -1045,10 +1203,10 @@ describe("AppShell", () => {
       expect(screen.getByRole("button", { name: "MU 마이크론 상세 보기" })).toBeVisible();
     });
     fireEvent.click(screen.getByRole("button", { name: "MU 마이크론 상세 보기" }));
-    fireEvent.click(screen.getByRole("button", { name: "차익실현 압박 추정 초보자 설명 보기" }));
+    fireEvent.click(screen.getByRole("button", { name: "차익실현 리스크 초보자 설명 보기" }));
 
-    expect(screen.getByRole("tooltip", { name: "차익실현 압박 추정 설명" })).toBeVisible();
-    expect(screen.getByText("차익실현 압박 점수 = 42점")).toBeVisible();
+    expect(screen.getByRole("tooltip", { name: "차익실현 리스크 설명" })).toBeVisible();
+    expect(screen.getByText("차익실현 리스크 = 42점")).toBeVisible();
     expect(screen.getByText("표준 공식명이 아니며 매수·매도 추천으로 해석하지 않습니다.")).toBeVisible();
     expect(
       screen.getByText("표준 공식명이 아니라 앱 내부 추정 지표이며 실제 보유자 원가나 매도 의도를 알 수 없습니다.")

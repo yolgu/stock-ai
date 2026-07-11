@@ -1,0 +1,93 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://stock-sub.local/schemas/research-object.v1.json",
+  "title": "Research Object Descriptor",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "id",
+    "type",
+    "title",
+    "version",
+    "lifecycleState",
+    "evidenceLevel",
+    "purpose",
+    "dependsOn",
+    "artifacts"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": "research-object.v1"
+    },
+    "id": {
+      "type": "string",
+      "pattern": "^[A-Z]{2,4}-[0-9]{3}$"
+    },
+    "type": {
+      "enum": [
+        "ResearchBaseline",
+        "MetaStudy",
+        "ResearchProgram",
+        "ResearchQuestion",
+        "StudyProtocol",
+        "DatasetContract",
+        "ModelCandidate",
+        "ExperimentRun",
+        "EvidenceBundle",
+        "DecisionRecord",
+        "SynthesisReport"
+      ]
+    },
+    "title": {
+      "type": "string",
+      "minLength": 1
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
+    },
+    "lifecycleState": {
+      "enum": [
+        "proposed",
+        "preregistered",
+        "active",
+        "frozen",
+        "completed",
+        "rejected",
+        "archived"
+      ]
+    },
+    "evidenceLevel": {
+      "enum": [
+        "conceptual",
+        "exploratory",
+        "confirmatory",
+        "reproduced",
+        "replicated"
+      ]
+    },
+    "purpose": {
+      "type": "string",
+      "minLength": 1
+    },
+    "dependsOn": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "pattern": "^[A-Z]{2,4}-[0-9]{3}$"
+      }
+    },
+    "artifacts": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    }
+  }
+}
+

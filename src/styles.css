@@ -700,6 +700,63 @@ select:focus {
   background: var(--color-faint);
 }
 
+.profit-taking-risk {
+  display: grid;
+  gap: 10px;
+}
+
+.profit-taking-risk__summary {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.profit-taking-risk__summary strong {
+  color: var(--color-text);
+  font-size: 1.2rem;
+}
+
+.profit-taking-risk__summary span,
+.profit-taking-risk p {
+  color: var(--color-muted);
+  line-height: 1.42;
+}
+
+.profit-taking-risk__causes {
+  display: grid;
+  gap: 7px;
+}
+
+.profit-taking-cause {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+  padding: 9px 0;
+  border-top: 1px solid rgba(124, 150, 180, 0.14);
+}
+
+.profit-taking-cause div {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.profit-taking-cause strong {
+  color: var(--color-text);
+}
+
+.profit-taking-cause span {
+  color: var(--color-muted);
+  font-size: 0.78rem;
+}
+
+.profit-taking-cause b {
+  color: var(--color-text);
+  font-size: 0.9rem;
+}
+
 .conditional-zone {
   display: grid;
   gap: 5px;

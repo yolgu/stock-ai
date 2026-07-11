@@ -1,0 +1,17 @@
+{
+  "schemaVersion": "research-object.v1",
+  "id": "DC-006",
+  "type": "DatasetContract",
+  "title": "주문 수명주기·실행비용 데이터 계약",
+  "version": "1.0.0",
+  "lifecycleState": "proposed",
+  "evidenceLevel": "conceptual",
+  "purpose": "decision·submit·provider-received·ack·fill·cancel·reject 시각과 partial fill·queue·비용·유동성의 수락조건 및 운영채택 차단조건을 고정한다.",
+  "dependsOn": [
+    "DC-002",
+    "RQ-006"
+  ],
+  "artifacts": [
+    "research/meta-research/objects/dataset-contracts/DC-006-execution-cost/data-contract.md"
+  ]
+}

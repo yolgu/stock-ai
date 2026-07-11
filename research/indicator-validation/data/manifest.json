@@ -1,0 +1,105 @@
+{
+  "spec": "toss-daily-candle-archive/v1",
+  "endpoint": "https://openapi.tossinvest.com/api/v1/candles",
+  "openApiSpecUrl": "https://openapi.tossinvest.com/openapi-docs/latest/openapi.json",
+  "fetchedAt": "2026-07-09T21:14:12.836Z",
+  "request": {
+    "symbols": [
+      "TSLA",
+      "NVDA",
+      "MU",
+      "000660"
+    ],
+    "startDate": "1900-01-01",
+    "endDate": "2026-07-09",
+    "interval": "1d",
+    "adjusted": true,
+    "count": 200
+  },
+  "archives": [
+    {
+      "symbol": "TSLA",
+      "currency": "USD",
+      "adjusted": true,
+      "rows": 4031,
+      "start": "2010-06-29T13:00:00.000+09:00",
+      "end": "2026-07-09T13:00:00.000+09:00",
+      "pages": 21,
+      "rawRows": 4031,
+      "duplicates": 0,
+      "termination": "source_exhausted",
+      "candleCanonicalSha256": "46e2e29c14bf19674860f9ca74d1ee22ea63596c2185cfc0ec666572573b2285",
+      "rawFileSha256": "467a1da53b1ee84e35dce5463bb79f3d6b502e53fd18a69eb2b1f1204b1179f4",
+      "rawFile": "raw/TSLA.json",
+      "quality": {
+        "ascending": true,
+        "unique": true,
+        "strictOhlcv": true,
+        "cutoffCompliant": true
+      }
+    },
+    {
+      "symbol": "NVDA",
+      "currency": "USD",
+      "adjusted": true,
+      "rows": 6907,
+      "start": "1999-01-22T14:00:00.000+09:00",
+      "end": "2026-07-09T13:00:00.000+09:00",
+      "pages": 35,
+      "rawRows": 6907,
+      "duplicates": 0,
+      "termination": "source_exhausted",
+      "candleCanonicalSha256": "fc8d95521976914ebe23ee3c0a8d8a23ad90a85df2c2c322c113a6595b1b8864",
+      "rawFileSha256": "a48a43da5a64802ebb5e5d882c1960ac83dc64ad3b98dc17e3251d6d17e42007",
+      "rawFile": "raw/NVDA.json",
+      "quality": {
+        "ascending": true,
+        "unique": true,
+        "strictOhlcv": true,
+        "cutoffCompliant": true
+      }
+    },
+    {
+      "symbol": "MU",
+      "currency": "USD",
+      "adjusted": true,
+      "rows": 9196,
+      "start": "1990-01-02T14:00:00.000+09:00",
+      "end": "2026-07-09T13:00:00.000+09:00",
+      "pages": 46,
+      "rawRows": 9196,
+      "duplicates": 0,
+      "termination": "source_exhausted",
+      "candleCanonicalSha256": "de626d8404f6a450c619b2ef318d44a7ef1e4c847d05382a1ad3ef8a70092887",
+      "rawFileSha256": "f108881b25995f480223451d6f1286a1756ef4e4a73f12cc7bc2345313711cb7",
+      "rawFile": "raw/MU.json",
+      "quality": {
+        "ascending": true,
+        "unique": true,
+        "strictOhlcv": true,
+        "cutoffCompliant": true
+      }
+    },
+    {
+      "symbol": "000660",
+      "currency": "KRW",
+      "adjusted": true,
+      "rows": 7371,
+      "start": "1996-12-26T00:00:00.000+09:00",
+      "end": "2026-07-09T00:00:00.000+09:00",
+      "pages": 37,
+      "rawRows": 7371,
+      "duplicates": 0,
+      "termination": "source_exhausted",
+      "candleCanonicalSha256": "14676c486eeeccc9fb69681d049645ad027918a991d5130ab593236c64dcd9ed",
+      "rawFileSha256": "258c6ab73b365a2b114b028d6636d4ae9fc2c9b76d4267690f904e9474e21b62",
+      "rawFile": "raw/000660.json",
+      "quality": {
+        "ascending": true,
+        "unique": true,
+        "strictOhlcv": true,
+        "cutoffCompliant": true
+      }
+    }
+  ]
+}

@@ -1,0 +1,19 @@
+{
+  "schemaVersion": "research-object.v1",
+  "id": "MS-001",
+  "type": "MetaStudy",
+  "title": "정량금융 연구 프로그램 문서·객체 거버넌스 메타연구",
+  "version": "1.0.0",
+  "lifecycleState": "completed",
+  "evidenceLevel": "conceptual",
+  "purpose": "후속 연구 전에 연구질문·자료·실행·근거·결정을 추적할 최소 문서체계와 품질계측 방법을 선택한다.",
+  "dependsOn": [
+    "RB-001"
+  ],
+  "artifacts": [
+    "research/meta-research/objects/meta-studies/MS-001-research-program-governance/evidence-matrix.md",
+    "research/meta-research/objects/meta-studies/MS-001-research-program-governance/protocol.md",
+    "research/meta-research/objects/meta-studies/MS-001-research-program-governance/report.md"
+  ]
+}
+

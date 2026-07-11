@@ -1,0 +1,18 @@
+{
+  "schemaVersion": "research-object.v1",
+  "id": "DC-005",
+  "type": "DatasetContract",
+  "title": "순서보존 주문장·체결 사건 데이터 계약",
+  "version": "1.0.0",
+  "lifecycleState": "proposed",
+  "evidenceLevel": "conceptual",
+  "purpose": "venue clock·sequence가 있는 주문장·체결·취소·aggressor 사건과 60초 midquote markout의 수락조건 및 snapshot 대체 금지를 고정한다.",
+  "dependsOn": [
+    "DC-002",
+    "RQ-005"
+  ],
+  "artifacts": [
+    "research/meta-research/objects/dataset-contracts/DC-005-microstructure/data-contract.md"
+  ]
+}
+

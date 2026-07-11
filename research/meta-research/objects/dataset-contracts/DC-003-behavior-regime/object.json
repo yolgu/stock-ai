@@ -1,0 +1,18 @@
+{
+  "schemaVersion": "research-object.v1",
+  "id": "DC-003",
+  "type": "DatasetContract",
+  "title": "직접 행동·노출·흐름 데이터 계약",
+  "version": "1.0.0",
+  "lifecycleState": "proposed",
+  "evidenceLevel": "conceptual",
+  "purpose": "행동 명칭에 필요한 직접 attention·노출·흐름·계좌·자기보고와 5거래일 결과 라벨의 시점정렬·가용성·결측 차단조건을 고정한다.",
+  "dependsOn": [
+    "DC-002",
+    "RQ-003"
+  ],
+  "artifacts": [
+    "research/meta-research/objects/dataset-contracts/DC-003-behavior-regime/data-contract.md"
+  ]
+}
+

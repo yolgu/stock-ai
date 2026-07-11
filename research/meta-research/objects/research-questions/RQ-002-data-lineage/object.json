@@ -1,0 +1,16 @@
+{
+  "schemaVersion": "research-object.v1",
+  "id": "RQ-002",
+  "type": "ResearchQuestion",
+  "title": "프로그램 필수자료의 계보·단위·가용시점·권리 판정",
+  "version": "1.0.1",
+  "lifecycleState": "completed",
+  "evidenceLevel": "conceptual",
+  "purpose": "GOAL-RP-001의 필수 입력군마다 기술 문서와 실제 수집·이용 권한을 분리하고, 자료 availability와 주장 identifiability를 서로 다른 축으로 판정해 현재 허용 연구범위를 고정한다.",
+  "dependsOn": [
+    "RP-001"
+  ],
+  "artifacts": [
+    "research/meta-research/objects/research-questions/RQ-002-data-lineage/question.md"
+  ]
+}

@@ -1,0 +1,16 @@
+{
+  "schemaVersion": "research-object.v1",
+  "id": "RQ-001",
+  "type": "ResearchQuestion",
+  "title": "시장 상태명 관측가능성과 판별타당도",
+  "version": "1.0.0",
+  "lifecycleState": "completed",
+  "evidenceLevel": "conceptual",
+  "purpose": "사전 지정된 시장 상태 후보를 가격·거래량 국면, 잠재상태, 인간 심리, 거래결정으로 구분하고 자료 계층별 명칭 허용범위를 판정한다.",
+  "dependsOn": [
+    "RP-001"
+  ],
+  "artifacts": [
+    "research/meta-research/objects/research-questions/RQ-001-market-state-identifiability/question.md"
+  ]
+}

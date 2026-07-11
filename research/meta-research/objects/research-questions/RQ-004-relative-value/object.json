@@ -1,0 +1,17 @@
+{
+  "schemaVersion": "research-object.v1",
+  "id": "RQ-004",
+  "type": "ResearchQuestion",
+  "title": "PIT 상대가치 잔차의 20거래일 사건 예측 증분",
+  "version": "1.0.0",
+  "lifecycleState": "proposed",
+  "evidenceLevel": "conceptual",
+  "purpose": "시점 t의 PIT 상대가치 잔차가 가격·요인 기준선보다 향후 20거래일 산업·시장조정 양의 초과수익 사건의 외부표본 확률예측을 개선하는지 식별한다.",
+  "dependsOn": [
+    "RP-001"
+  ],
+  "artifacts": [
+    "research/meta-research/objects/research-questions/RQ-004-relative-value/question.md"
+  ]
+}
+
