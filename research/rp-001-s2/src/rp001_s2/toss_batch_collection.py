@@ -269,24 +269,25 @@ def run_toss_minute_batch(
     )
     terminals: list[TossMinuteScopeTerminal] = []
 
-    for scope_index, scope in enumerate(scopes):
-        outcome = _resume_or_collect(
-            scope=scope,
-            credential_file=credential_file,
-            archive_root=archive_root,
-            storage=storage,
-            clock=clock,
-            request_pacer=effective_pacer,
-            credential_loader=credential_loader,
-            shard_runner=shard_runner,
-            canonicalizer=canonicalizer,
-        )
-        entry = ledger.append(
-            _TERMINAL_EVENT_TYPE,
-            _terminal_payload(scope_index, scope, outcome),
-            _format_utc(clock()),
-        )
-        terminals.append(_terminal(scope_index, outcome, entry))
+    with ledger.transaction() as ledger_transaction:
+        for scope_index, scope in enumerate(scopes):
+            outcome = _resume_or_collect(
+                scope=scope,
+                credential_file=credential_file,
+                archive_root=archive_root,
+                storage=storage,
+                clock=clock,
+                request_pacer=effective_pacer,
+                credential_loader=credential_loader,
+                shard_runner=shard_runner,
+                canonicalizer=canonicalizer,
+            )
+            entry = ledger_transaction.append(
+                _TERMINAL_EVENT_TYPE,
+                _terminal_payload(scope_index, scope, outcome),
+                _format_utc(clock()),
+            )
+            terminals.append(_terminal(scope_index, outcome, entry))
 
     terminal_tuple = tuple(terminals)
     return TossMinuteBatchSummary(

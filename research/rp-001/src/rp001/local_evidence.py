@@ -596,6 +596,7 @@ class LocalLedgerTransaction:
     ) -> None:
         self._ledger = ledger
         self._chain = chain
+        self._append_state: LocalLedgerState | None = None
 
     def validate(self) -> LocalLedgerState:
         self.verify()
@@ -603,7 +604,37 @@ class LocalLedgerTransaction:
             self._chain.identity
         )
         self.verify()
-        return LocalLedgerState(sequence, record_sha256)
+        state = LocalLedgerState(sequence, record_sha256)
+        self._append_state = state
+        return state
+
+    def append_state(self) -> LocalLedgerState:
+        if self._append_state is None:
+            return self.validate()
+        self.verify()
+        return self._append_state
+
+    def accept_append(
+        self,
+        entry: LocalLedgerEntry,
+        *,
+        expected_previous_sha256: str | None,
+    ) -> None:
+        self.verify()
+        actual_sha256 = self._ledger._validate_entry_at(
+            self._chain.directory_descriptor,
+            entry.path.name,
+            entry.sidecar_path.name,
+            entry.sequence,
+            expected_previous_sha256,
+        )
+        self.verify()
+        if actual_sha256 != entry.record_sha256:
+            raise LocalEvidenceError("local ledger append postcondition failed")
+        self._append_state = LocalLedgerState(
+            entry.sequence,
+            entry.record_sha256,
+        )
 
     def append(
         self,
@@ -643,8 +674,9 @@ class AppendOnlyLocalLedger:
             fcntl.flock(chain.directory_descriptor, fcntl.LOCK_EX)
             locked = True
             chain.verify()
-            yield LocalLedgerTransaction(self, chain)
-            chain.verify()
+            transaction = LocalLedgerTransaction(self, chain)
+            yield transaction
+            transaction.validate()
         except OSError as error:
             raise LocalEvidenceError("local ledger lock failed") from error
         finally:
@@ -673,7 +705,7 @@ class AppendOnlyLocalLedger:
         payload: Mapping[str, object],
         occurred_at: str,
     ) -> LocalLedgerEntry:
-        prior = transaction.validate()
+        prior = transaction.append_state()
         sequence = prior.sequence + 1
         if sequence > _MAX_LOCAL_SEQUENCE:
             raise LocalEvidenceError("local ledger sequence is exhausted")
@@ -689,15 +721,15 @@ class AppendOnlyLocalLedger:
         transaction.verify()
         binding = self._store.publish_json(path, record)
         try:
-            transaction.verify()
-            after = transaction.validate()
-            if (
-                after.sequence != sequence
-                or after.record_sha256 != binding.artifact_sha256
-            ):
-                raise LocalEvidenceError(
-                    "local ledger append postcondition failed"
-                )
+            transaction.accept_append(
+                LocalLedgerEntry(
+                    sequence=sequence,
+                    path=binding.path,
+                    sidecar_path=binding.sidecar_path,
+                    record_sha256=binding.artifact_sha256,
+                ),
+                expected_previous_sha256=prior.record_sha256,
+            )
         except BaseException as error:
             raise LocalLedgerAppendError(
                 "local ledger changed after event publication",

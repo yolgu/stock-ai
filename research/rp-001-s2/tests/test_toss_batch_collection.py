@@ -9,7 +9,9 @@ from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable, MutableMapping
+from unittest.mock import patch
 
+from rp001.local_evidence import AppendOnlyLocalLedger
 from rp001.toss_research_collector import CanonicalScalar, RawHttpCapture
 from rp001_s2.archive_contract import CollectionScope, SampleRole
 from rp001_s2.archive_storage import CanonicalMinuteBar
@@ -263,6 +265,36 @@ def _run(
 
 
 class TossMinuteBatchResumeTest(unittest.TestCase):
+    def test_batch_uses_one_linear_ledger_transaction(self) -> None:
+        scopes = tuple(
+            _scope(symbol, minute_offset=index * 10)
+            for index, symbol in enumerate(("AAPL", "MSFT", "NVDA"))
+        )
+        dependencies = _Dependencies()
+        original_validate = AppendOnlyLocalLedger._validate_existing_entries
+        validation_count = 0
+
+        def count_validation(
+            ledger: AppendOnlyLocalLedger,
+            events_identity: object,
+        ) -> tuple[int, str | None]:
+            nonlocal validation_count
+            validation_count += 1
+            return original_validate(ledger, events_identity)
+
+        with (
+            tempfile.TemporaryDirectory() as temporary_directory,
+            patch.object(
+                AppendOnlyLocalLedger,
+                "_validate_existing_entries",
+                new=count_validation,
+            ),
+        ):
+            summary = _run(Path(temporary_directory), scopes, dependencies)
+
+        self.assertEqual(3, summary.completed_count)
+        self.assertEqual(2, validation_count)
+
     def test_verified_resume_reads_neither_network_nor_credentials(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)

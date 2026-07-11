@@ -390,6 +390,57 @@ class AppendOnlyLocalLedgerTest(unittest.TestCase):
         self.assertTrue(completed.is_set())
         self.assertTrue((self.events_directory / "000002.json").is_file())
 
+    def test_transaction_validates_full_chain_only_at_batch_boundaries(
+        self,
+    ) -> None:
+        original_validate = AppendOnlyLocalLedger._validate_existing_entries
+        validation_count = 0
+
+        def count_validation(
+            ledger: AppendOnlyLocalLedger,
+            events_identity: object,
+        ) -> tuple[int, str | None]:
+            nonlocal validation_count
+            validation_count += 1
+            return original_validate(ledger, events_identity)
+
+        with patch.object(
+            AppendOnlyLocalLedger,
+            "_validate_existing_entries",
+            new=count_validation,
+        ):
+            with self.ledger.transaction() as transaction:
+                transaction.append("first", {}, "2026-07-11T12:00:00+09:00")
+                transaction.append("second", {}, "2026-07-11T12:01:00+09:00")
+                transaction.append("third", {}, "2026-07-11T12:02:00+09:00")
+
+        self.assertEqual(2, validation_count)
+
+    def test_transaction_exit_rejects_tampering_after_incremental_append(
+        self,
+    ) -> None:
+        with self.assertRaises(ValueError):
+            with self.ledger.transaction() as transaction:
+                first = transaction.append(
+                    "first",
+                    {},
+                    "2026-07-11T12:00:00+09:00",
+                )
+                transaction.append(
+                    "second",
+                    {},
+                    "2026-07-11T12:01:00+09:00",
+                )
+                record = load_json_object(first.path)
+                record["eventType"] = "tampered"
+                source = canonical_json_bytes(record)
+                first.path.write_bytes(source)
+                first.sidecar_path.write_bytes(
+                    f"{sha256_bytes(source)}\n".encode("ascii")
+                )
+
+        self.assertTrue((self.events_directory / "000002.json").is_file())
+
     def test_append_revalidates_chain_after_validate_before_publish_tamper(
         self,
     ) -> None:
