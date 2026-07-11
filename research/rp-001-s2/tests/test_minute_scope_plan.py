@@ -7,10 +7,30 @@ from rp001_s2.archive_contract import SampleRole
 from rp001_s2.minute_scope_plan import (
     TossMinutePlanVersion,
     build_toss_minute_scope_plan,
+    canonical_minute_plan_bytes,
+    parse_toss_minute_scope_plan,
 )
 
 
 class TossMinuteScopePlanTest(unittest.TestCase):
+    def test_canonical_plan_round_trip_reconstructs_every_frozen_scope(self) -> None:
+        plan = build_toss_minute_scope_plan(
+            instruments=(("US-AAPL", "AAPL"), ("US-SPY", "SPY")),
+            start_at=datetime(2026, 7, 1, tzinfo=timezone.utc),
+            end_at=datetime(2026, 7, 3, tzinfo=timezone.utc),
+            instrument_master_sha256="d" * 64,
+            sample_role=SampleRole.SEEN,
+        )
+
+        source = canonical_minute_plan_bytes(plan)
+        parsed = parse_toss_minute_scope_plan(source)
+
+        self.assertEqual(parsed, plan)
+        self.assertEqual(
+            tuple(scope.acquisition_key for scope in parsed.scopes),
+            tuple(scope.acquisition_key for scope in plan.scopes),
+        )
+
     def test_frozen_range_is_exhaustively_sharded_for_every_symbol_and_mode(self) -> None:
         start = datetime(2026, 6, 1, tzinfo=timezone.utc)
         end = datetime(2026, 6, 20, tzinfo=timezone.utc)
