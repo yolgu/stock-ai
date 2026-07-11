@@ -486,7 +486,7 @@ def _completion(
     rows: tuple[CanonicalDailyBar, ...],
 ) -> AcquisitionCompletion:
     reached = any(
-        _session_date(row.timestamp) < scope.start_at.date()
+        _session_date(row.timestamp, row.currency) < scope.start_at.date()
         for row in collection.audit_only_rows
     )
     if rows and reached:
@@ -562,12 +562,14 @@ def _read_manifest(stored: StoredDailyArchive) -> dict[str, object]:
     return value
 
 
-def _session_date(value: str):
+def _session_date(value: str, currency: str):
     from zoneinfo import ZoneInfo
 
     parsed = datetime.fromisoformat(
         value[:-1] + "+00:00" if value.endswith("Z") else value
     )
+    if currency == "KRW":
+        return parsed.date()
     return parsed.astimezone(ZoneInfo("America/New_York")).date()
 
 

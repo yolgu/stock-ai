@@ -26,6 +26,8 @@ _END_DATETIME = "20260711000000"
 _MODES = frozenset({"timelinevolraw", "timelinetone"})
 _REQUEST_INTERVAL_SECONDS = 10.0
 _RATE_LIMIT_BACKOFF_SECONDS = (30.0, 60.0, 120.0)
+_TICKER_PROXY_SYMBOLS = ("TSLA", "NVDA", "AAPL")
+_FROZEN_SYMBOLS = tuple(sorted((*PRIORITY_SYMBOLS, *BENCHMARK_SYMBOLS)))
 _IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _CANONICAL_COMPANY_NAMES: Mapping[str, str] = {
@@ -242,6 +244,73 @@ def build_gdelt_query_map(
         entries=tuple(entries),
         scope_plan_sha256=sha256_bytes(scope_plan_source),
         directory_master_sha256=sha256_bytes(directory_master_source),
+        frozen_at=frozen_at,
+    )
+
+
+@dataclass(frozen=True)
+class FrozenGdeltTickerProxyMap:
+    company_query_map_sha256: str
+    frozen_at: str
+
+    def __post_init__(self) -> None:
+        if _SHA256.fullmatch(self.company_query_map_sha256) is None:
+            raise GdeltNewsArchiveError("gdelt_ticker_proxy_map_invalid")
+        _parse_utc(self.frozen_at)
+
+    def to_canonical_body(self) -> dict[str, object]:
+        forbidden = [
+            symbol
+            for symbol in _FROZEN_SYMBOLS
+            if symbol not in _TICKER_PROXY_SYMBOLS
+        ]
+        return {
+            "schemaVersion": "rp001-s2-gdelt-ticker-query-proxy-map.v1",
+            "identityDomain": "rp001_s2.gdelt_ticker_query_proxy_map",
+            "frozenAt": self.frozen_at,
+            "sourceCompanyQueryMap": {
+                "path": (
+                    f"query-maps/{self.company_query_map_sha256}/query-map.json"
+                ),
+                "sha256": self.company_query_map_sha256,
+            },
+            "queryKind": "ticker_query_proxy",
+            "evidenceStatus": "proxy_only",
+            "mixingWithCompanyMeasure": "forbidden",
+            "eligibleSymbols": list(_TICKER_PROXY_SYMBOLS),
+            "entries": [
+                {
+                    "instrumentId": symbol,
+                    "symbol": symbol,
+                    "gdeltQuery": symbol,
+                    "queryKind": "ticker_query_proxy",
+                    "evidenceStatus": "proxy_only",
+                }
+                for symbol in _TICKER_PROXY_SYMBOLS
+            ],
+            "fallbackForbiddenSymbols": forbidden,
+            "queryContract": {
+                "endpoint": _ENDPOINT,
+                "format": "json",
+                "modes": ["timelinevolraw", "timelinetone"],
+                "startDatetime": _START_DATETIME,
+                "endDatetime": _END_DATETIME,
+                "timelineSmooth": 0,
+                "requestStartIntervalSeconds": 10,
+                "http429BackoffSeconds": [30, 60, 120],
+                "maxAttempts": 4,
+            },
+        }
+
+
+def build_gdelt_ticker_proxy_map(
+    *,
+    company_query_map_sha256: str,
+    frozen_at: str,
+) -> FrozenGdeltTickerProxyMap:
+    """Freeze the isolated three-symbol ticker proxy and forbid all others."""
+    return FrozenGdeltTickerProxyMap(
+        company_query_map_sha256=company_query_map_sha256,
         frozen_at=frozen_at,
     )
 

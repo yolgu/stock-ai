@@ -15,6 +15,7 @@ from rp001_s2.gdelt_news_archive import (
     GdeltQueryEntry,
     GlobalGdeltWorker,
     build_gdelt_query_map,
+    build_gdelt_ticker_proxy_map,
 )
 
 
@@ -127,6 +128,25 @@ class GdeltQueryMapTest(unittest.TestCase):
             self.assertTrue(entry.query.startswith('"'))
             self.assertTrue(entry.query.endswith('"'))
             self.assertNotEqual(entry.query, f'"{entry.symbol}"')
+
+    def test_ticker_proxy_is_physically_separate_and_forbids_other_symbols(self) -> None:
+        proxy_map = build_gdelt_ticker_proxy_map(
+            company_query_map_sha256="a" * 64,
+            frozen_at="2026-07-11T16:15:00Z",
+        )
+
+        body = proxy_map.to_canonical_body()
+        self.assertEqual(body["queryKind"], "ticker_query_proxy")
+        self.assertEqual(body["evidenceStatus"], "proxy_only")
+        self.assertEqual(body["mixingWithCompanyMeasure"], "forbidden")
+        self.assertEqual(body["eligibleSymbols"], ["TSLA", "NVDA", "AAPL"])
+        self.assertEqual(
+            [entry["gdeltQuery"] for entry in body["entries"]],
+            ["TSLA", "NVDA", "AAPL"],
+        )
+        self.assertNotIn("TSLA", body["fallbackForbiddenSymbols"])
+        self.assertIn("CAT", body["fallbackForbiddenSymbols"])
+        self.assertEqual(len(body["fallbackForbiddenSymbols"]), 45)
 
 
 class GlobalGdeltWorkerTest(unittest.TestCase):

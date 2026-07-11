@@ -103,7 +103,7 @@ class CanonicalDailyBar:
         )
         if (
             any(not isinstance(value, str) or not value for value in identifiers)
-            or source.astimezone(_NEW_YORK).date().isoformat() != self.session_date
+            or _session_date(source, self.currency) != self.session_date
             or available < received
             or low_price <= 0
             or not low_price <= open_price <= high_price
@@ -673,6 +673,14 @@ def _parse_timestamp(value: str) -> datetime:
     if parsed.tzinfo is None:
         raise ValueError
     return parsed
+
+
+def _session_date(value: datetime, currency: str) -> str:
+    if currency == "KRW":
+        return value.date().isoformat()
+    if currency == "USD":
+        return value.astimezone(_NEW_YORK).date().isoformat()
+    raise ValueError
 
 
 def _write_new(path: Path, source: bytes) -> None:
