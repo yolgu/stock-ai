@@ -17,6 +17,7 @@ from rp001.toss_research_collector import (
     CollectorError,
     HttpRequest,
     HttpResponse,
+    RawHttpCapture,
     TossResearchCollector,
 )
 
@@ -502,6 +503,28 @@ class MetadataCollectionContractTest(TossResearchCollectorTestCase):
 
 
 class SecurityBoundaryContractTest(TossResearchCollectorTestCase):
+    def test_raw_capture_repr_redacts_body_headers_url_and_query_values(self) -> None:
+        secret = "fake-secret-that-must-not-render"
+        cursor = "raw-page-cursor-that-must-not-render"
+        capture = RawHttpCapture(
+            endpoint_id="fixture",
+            method="GET",
+            sanitized_url=f"https://example.test/data?page_token={cursor}",
+            query=(("page_token", cursor),),
+            status=401,
+            headers=(("authorization", secret),),
+            received_at="2026-07-11T00:00:00Z",
+            body_base64=base64.b64encode(secret.encode("utf-8")).decode("ascii"),
+            body_sha256=hashlib.sha256(secret.encode("utf-8")).hexdigest(),
+        )
+
+        rendered = repr(capture)
+
+        self.assertNotIn(secret, rendered)
+        self.assertNotIn(cursor, rendered)
+        self.assertNotIn(capture.body_base64, rendered)
+        self.assertIn("body=<redacted>", rendered)
+
     def test_request_repr_capture_and_http_error_never_expose_token_or_provider_body(self) -> None:
         memory_bearer = "never-" + "print-" + "this-" + "memory-" + "bearer"
         private_body = b'{"message":"provider-private-detail"}'

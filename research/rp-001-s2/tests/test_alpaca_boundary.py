@@ -29,8 +29,10 @@ class _Response:
     def __init__(
         self,
         body: bytes = b'{"bars":[],"symbol":"TSLA","next_page_token":null}',
+        *,
+        status: int = 200,
     ) -> None:
-        self.status = 200
+        self.status = status
         self.headers = {"Content-Type": "application/json"}
         self._body = io.BytesIO(body)
 
@@ -42,13 +44,14 @@ class _Response:
 
 
 class _Opener:
-    def __init__(self) -> None:
+    def __init__(self, response: _Response | None = None) -> None:
         self.requests: list[object] = []
+        self._response = response or _Response()
 
     def open(self, request: object, timeout: float) -> _Response:
         del timeout
         self.requests.append(request)
-        return _Response()
+        return self._response
 
 
 def _scope(**overrides: object) -> CollectionScope:
@@ -101,6 +104,10 @@ class AlpacaCredentialCapabilityTest(unittest.TestCase):
         self.assertNotIn(_KEY_ID, repr(capability))
         self.assertNotIn(_SECRET_KEY, repr(capability))
         self.assertEqual(repr(capability), "AlpacaCredentialCapability(<redacted>)")
+        self.assertFalse(hasattr(capability, "authorized_headers"))
+        self.assertTrue(capability.contains_sensitive(_SECRET_KEY.encode("utf-8")))
+        self.assertTrue(capability.contains_sensitive(_KEY_ID.encode("utf-8")))
+        self.assertFalse(capability.contains_sensitive(b'{"bars":[]}'))
 
     def test_factory_rejects_invalid_credentials_after_consuming_both(self) -> None:
         for environment in (
@@ -279,6 +286,35 @@ class StrictAlpacaBarsTransportTest(unittest.TestCase):
         self.assertEqual(raised.exception.code, "alpaca_transport_error")
         self.assertNotIn(_KEY_ID, rendered)
         self.assertNotIn(_SECRET_KEY, rendered)
+
+    def test_credential_echo_and_requested_cursor_are_rejected_before_capture(self) -> None:
+        raw_cursor = "opaque-provider-page-cursor"
+        cases = (
+            _Response(
+                ('{"message":"' + _SECRET_KEY + '"}').encode("utf-8"),
+                status=401,
+            ),
+            _Response(
+                ('{"message":"' + raw_cursor + '"}').encode("utf-8"),
+                status=400,
+            ),
+        )
+        for response, page_token in zip(cases, (None, raw_cursor), strict=True):
+            with self.subTest(page_token_present=page_token is not None):
+                opener = _Opener(response)
+                transport = StrictAlpacaBarsTransport(
+                    opener=opener,
+                    scope=_scope(),
+                    credentials=_capability(),
+                )
+
+                with self.assertRaises(ReadOnlyBoundaryError) as raised:
+                    transport.request_page(page_token)
+
+                rendered = repr(raised.exception) + str(raised.exception)
+                self.assertEqual(raised.exception.captures, ())
+                self.assertNotIn(_SECRET_KEY, rendered)
+                self.assertNotIn(raw_cursor, rendered)
 
     def test_live_factory_installs_redirect_rejection(self) -> None:
         transport = build_live_strict_alpaca_transport(

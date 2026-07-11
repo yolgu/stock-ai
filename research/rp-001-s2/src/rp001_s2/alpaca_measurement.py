@@ -8,7 +8,6 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
-from urllib.parse import parse_qsl, urlsplit
 
 from rp001.toss_research_collector import (
     CanonicalScalar,
@@ -23,6 +22,7 @@ from rp001.toss_research_collector import (
 from rp001_s2.alpaca_boundary import (
     StrictAlpacaBarsTransport,
     _bars_url,
+    _sanitized_capture_url_and_query,
     _valid_scope,
 )
 from rp001_s2.archive_contract import CollectionScope
@@ -267,13 +267,10 @@ def _capture_response(
         received_at = _utc_timestamp(clock)
     except CollectorError:
         raise AlpacaMeasurementError("CLOCK_INVALID") from None
-    sanitized_url = _bars_url(scope, requested_page_token)
-    query = tuple(
-        parse_qsl(
-            urlsplit(sanitized_url).query,
-            keep_blank_values=True,
-            strict_parsing=True,
-        )
+    actual_url = _bars_url(scope, requested_page_token)
+    sanitized_url, query = _sanitized_capture_url_and_query(
+        actual_url,
+        requested_page_token,
     )
     headers = _capture_headers(response.headers)
     return RawHttpCapture(

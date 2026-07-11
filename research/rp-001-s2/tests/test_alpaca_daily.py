@@ -23,8 +23,8 @@ _KEY_ID = "fixture-key-id"
 _SECRET_KEY = "fixture-secret-key"
 _EXPECTED_URL = (
     "https://data.alpaca.markets/v2/stocks/TSLA/bars?"
-    "timeframe=1Day&start=2016-01-01T00%3A00%3A00Z&"
-    "end=2016-01-03T00%3A00%3A00Z&limit=10000&adjustment=raw&"
+    "timeframe=1Day&start=2016-01-01T05%3A00%3A00Z&"
+    "end=2016-01-03T05%3A00%3A00Z&limit=10000&adjustment=raw&"
     "asof=-&feed=sip&currency=USD&sort=asc"
 )
 
@@ -187,6 +187,35 @@ class StrictAlpacaDailyBoundaryTest(unittest.TestCase):
             },
         )
 
+    def test_query_uses_new_york_midnight_for_summer_and_winter_dates(self) -> None:
+        cases = (
+            (
+                _scope(
+                    start_at=datetime(2023, 9, 29, tzinfo=timezone.utc),
+                    end_at=datetime(2023, 9, 30, tzinfo=timezone.utc),
+                ),
+                "start=2023-09-29T04%3A00%3A00Z&end=2023-09-29T04%3A00%3A00Z",
+            ),
+            (
+                _scope(
+                    start_at=datetime(2024, 1, 3, tzinfo=timezone.utc),
+                    end_at=datetime(2024, 1, 4, tzinfo=timezone.utc),
+                ),
+                "start=2024-01-03T05%3A00%3A00Z&end=2024-01-03T05%3A00%3A00Z",
+            ),
+        )
+        for scope, expected_query in cases:
+            with self.subTest(expected_query=expected_query):
+                opener = _QueueOpener((_Response(_body([], None)),))
+                transport = _transport(opener, scope)
+
+                transport.request_page()
+
+                self.assertIn(
+                    expected_query,
+                    getattr(opener.requests[0], "full_url"),
+                )
+
     def test_rejects_non_daily_or_non_us_scope_before_open(self) -> None:
         opener = _QueueOpener(())
         invalid_scopes = (
@@ -268,7 +297,7 @@ class StrictAlpacaDailyBoundaryTest(unittest.TestCase):
 class AlpacaDailyCollectionTest(unittest.TestCase):
     def test_preserves_numeric_lexemes_raw_body_and_daily_lineage(self) -> None:
         raw_body = (
-            b'{"bars":[{"t":"2016-01-01T00:00:00Z",'
+            b'{"bars":[{"t":"2016-01-01T05:00:00Z",'
             b'"o":1e2,"h":1.03E2,"l":9.9e1,"c":1.02e2,'
             b'"v":1e3,"n":2E1,"vw":1.01e2}],"symbol":"TSLA",'
             b'"currency":"USD","next_page_token":null}'
@@ -280,8 +309,8 @@ class AlpacaDailyCollectionTest(unittest.TestCase):
         self.assertEqual(result.completion_reason, "provider_terminal")
         self.assertEqual(len(result.rows), 1)
         row = result.rows[0]
-        self.assertEqual(row.source_timestamp, "2016-01-01T00:00:00Z")
-        self.assertEqual(row.bar_end, "2016-01-02T00:00:00Z")
+        self.assertEqual(row.source_timestamp, "2016-01-01T05:00:00Z")
+        self.assertEqual(row.bar_end, "2016-01-02T05:00:00Z")
         self.assertEqual(row.open_price.text, "1e2")
         self.assertEqual(row.high_price.text, "1.03E2")
         self.assertEqual(row.volume.text, "1e3")
@@ -298,8 +327,8 @@ class AlpacaDailyCollectionTest(unittest.TestCase):
         first = _Response(
             _body(
                 [
-                    _bar("2016-01-01T00:00:00Z"),
-                    _bar("2016-01-02T00:00:00Z"),
+                    _bar("2016-01-01T05:00:00Z"),
+                    _bar("2016-01-02T05:00:00Z"),
                 ],
                 "next",
             )
@@ -307,8 +336,8 @@ class AlpacaDailyCollectionTest(unittest.TestCase):
         second = _Response(
             _body(
                 [
-                    _bar("2016-01-02T00:00:00Z"),
-                    _bar("2016-01-03T00:00:00Z"),
+                    _bar("2016-01-02T05:00:00Z"),
+                    _bar("2016-01-03T05:00:00Z"),
                 ],
                 None,
             )
@@ -321,14 +350,85 @@ class AlpacaDailyCollectionTest(unittest.TestCase):
         self.assertEqual(result.overlap_count, 1)
         self.assertEqual(len(result.rows[1].occurrences), 2)
         self.assertEqual(len(opener.requests), 2)
+        cursor_sha256 = hashlib.sha256(b"next").hexdigest()
+        self.assertNotIn("page_token=next", result.captures[1].sanitized_url)
+        self.assertEqual(
+            result.captures[1].query[-1],
+            ("page_token_sha256", cursor_sha256),
+        )
+
+    def test_official_new_york_midnight_is_not_silently_data_unavailable(self) -> None:
+        cases = (
+            (
+                _scope(
+                    start_at=datetime(2023, 9, 29, tzinfo=timezone.utc),
+                    end_at=datetime(2023, 9, 30, tzinfo=timezone.utc),
+                ),
+                "2023-09-29T04:00:00Z",
+                "2023-09-30T04:00:00Z",
+                datetime(2023, 10, 1, tzinfo=timezone.utc),
+            ),
+            (
+                _scope(
+                    start_at=datetime(2024, 1, 3, tzinfo=timezone.utc),
+                    end_at=datetime(2024, 1, 4, tzinfo=timezone.utc),
+                ),
+                "2024-01-03T05:00:00Z",
+                "2024-01-04T05:00:00Z",
+                datetime(2024, 1, 5, tzinfo=timezone.utc),
+            ),
+        )
+        for scope, timestamp, expected_end, received_at in cases:
+            with self.subTest(timestamp=timestamp):
+                collector, _, _ = _collector(
+                    (_Response(_body([_bar(timestamp)], None)),),
+                    scope=scope,
+                    received_at=received_at,
+                )
+
+                result = collector.collect(scope=scope, page_limit=4)
+
+                self.assertEqual(result.completion_reason, "provider_terminal")
+                self.assertEqual(result.rows[0].bar_end, expected_end)
+
+    def test_daily_session_date_range_is_half_open(self) -> None:
+        scope = _scope(
+            start_at=datetime(2023, 9, 29, tzinfo=timezone.utc),
+            end_at=datetime(2023, 9, 30, tzinfo=timezone.utc),
+        )
+        collector, _, _ = _collector(
+            (_Response(_body([_bar("2023-09-30T04:00:00Z")], None)),),
+            scope=scope,
+            received_at=datetime(2023, 10, 2, tzinfo=timezone.utc),
+        )
+
+        with self.assertRaisesRegex(AlpacaDailyError, "BAR_OUTSIDE_SCOPE"):
+            collector.collect(scope=scope, page_limit=4)
+
+    def test_credential_echoing_error_has_no_capture_or_secret_repr(self) -> None:
+        secret = "fixture-secret-key"
+        collector, _, scope = _collector(
+            (
+                _Response(
+                    ('{"message":"' + secret + '"}').encode("utf-8"),
+                    status=401,
+                ),
+            )
+        )
+
+        with self.assertRaises(AlpacaDailyError) as raised:
+            collector.collect(scope=scope, page_limit=4)
+
+        self.assertEqual(raised.exception.captures, ())
+        self.assertNotIn(secret, repr(raised.exception) + str(raised.exception))
 
     def test_conflicting_overlap_or_nonascending_page_is_invalid(self) -> None:
         cases = (
             (
-                _Response(_body([_bar("2016-01-01T00:00:00Z")], "next")),
+                _Response(_body([_bar("2016-01-01T05:00:00Z")], "next")),
                 _Response(
                     _body(
-                        [_bar("2016-01-01T00:00:00Z", close_price=101)],
+                        [_bar("2016-01-01T05:00:00Z", close_price=101)],
                         None,
                     )
                 ),
@@ -338,8 +438,8 @@ class AlpacaDailyCollectionTest(unittest.TestCase):
                 _Response(
                     _body(
                         [
-                            _bar("2016-01-02T00:00:00Z"),
-                            _bar("2016-01-01T00:00:00Z"),
+                            _bar("2016-01-02T05:00:00Z"),
+                            _bar("2016-01-01T05:00:00Z"),
                         ],
                         None,
                     )
@@ -370,14 +470,14 @@ class AlpacaDailyCollectionTest(unittest.TestCase):
             ),
             (
                 (
-                    _Response(_body([_bar("2016-01-01T00:00:00Z")], "same")),
-                    _Response(_body([_bar("2016-01-02T00:00:00Z")], "same")),
+                    _Response(_body([_bar("2016-01-01T05:00:00Z")], "same")),
+                    _Response(_body([_bar("2016-01-02T05:00:00Z")], "same")),
                 ),
                 4,
                 "REPEATED_PAGE_TOKEN",
             ),
             (
-                (_Response(_body([_bar("2016-01-01T00:00:00Z")], "next")),),
+                (_Response(_body([_bar("2016-01-01T05:00:00Z")], "next")),),
                 1,
                 "PAGE_LIMIT_EXCEEDED",
             ),
@@ -389,7 +489,7 @@ class AlpacaDailyCollectionTest(unittest.TestCase):
                     collector.collect(scope=scope, page_limit=page_limit)
 
     def test_response_and_bar_shapes_symbol_currency_and_limit_are_exact(self) -> None:
-        valid_bar = _bar("2016-01-01T00:00:00Z")
+        valid_bar = _bar("2016-01-01T05:00:00Z")
         invalid_values: tuple[tuple[object, str], ...] = (
             ({"bars": [valid_bar], "symbol": "TSLA"}, "INVALID_RESPONSE_SHAPE"),
             (
@@ -433,32 +533,32 @@ class AlpacaDailyCollectionTest(unittest.TestCase):
     def test_bar_timestamp_scope_completion_and_value_invariants(self) -> None:
         invalid_cases = (
             (
-                _bar("2016-01-01T00:01:00Z"),
+                _bar("2016-01-01T05:01:00Z"),
                 datetime(2016, 1, 10, tzinfo=timezone.utc),
                 "INVALID_RESPONSE_SHAPE",
             ),
             (
-                _bar("2015-12-31T00:00:00Z"),
+                _bar("2015-12-31T05:00:00Z"),
                 datetime(2016, 1, 10, tzinfo=timezone.utc),
                 "BAR_OUTSIDE_SCOPE",
             ),
             (
-                _bar("2016-01-01T00:00:00Z"),
+                _bar("2016-01-01T05:00:00Z"),
                 datetime(2016, 1, 1, 12, 0, tzinfo=timezone.utc),
                 "BAR_NOT_COMPLETED",
             ),
             (
-                _bar("2016-01-01T00:00:00Z", low_price=101, open_price=100),
+                _bar("2016-01-01T05:00:00Z", low_price=101, open_price=100),
                 datetime(2016, 1, 10, tzinfo=timezone.utc),
                 "BAR_INVARIANT",
             ),
             (
-                _bar("2016-01-01T00:00:00Z", volume=-1),
+                _bar("2016-01-01T05:00:00Z", volume=-1),
                 datetime(2016, 1, 10, tzinfo=timezone.utc),
                 "BAR_INVARIANT",
             ),
             (
-                _bar("2016-01-01T00:00:00Z", trade_count=1.5),
+                _bar("2016-01-01T05:00:00Z", trade_count=1.5),
                 datetime(2016, 1, 10, tzinfo=timezone.utc),
                 "BAR_INVARIANT",
             ),
@@ -491,7 +591,7 @@ class AlpacaDailyCollectionTest(unittest.TestCase):
 
     def test_collection_scope_cannot_relabel_feed_or_adjustment(self) -> None:
         collector, opener, _ = _collector(
-            (_Response(_body([_bar("2016-01-01T00:00:00Z")], None)),)
+            (_Response(_body([_bar("2016-01-01T05:00:00Z")], None)),)
         )
 
         with self.assertRaisesRegex(AlpacaDailyError, "COLLECTION_SCOPE_MISMATCH"):

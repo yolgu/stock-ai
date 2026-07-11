@@ -192,6 +192,31 @@ class AlpacaMinuteMeasurementContractTest(unittest.TestCase):
                 "&page_token=next%2Ftoken"
             )
         )
+        cursor_sha256 = hashlib.sha256(b"next/token").hexdigest()
+        self.assertNotIn("next/token", result.captures[1].sanitized_url)
+        self.assertNotIn("next/token", repr(result.captures[0]))
+        self.assertEqual(
+            result.captures[1].query[-1],
+            ("page_token_sha256", cursor_sha256),
+        )
+        self.assertIn(cursor_sha256, result.captures[1].sanitized_url)
+
+    def test_credential_echoing_error_is_rejected_without_capture_or_body_leak(self) -> None:
+        secret = "fixture-secret-key"
+        collector, _, scope = _collector(
+            (
+                _Response(
+                    ('{"message":"' + secret + '"}').encode("utf-8"),
+                    status=401,
+                ),
+            )
+        )
+
+        with self.assertRaises(AlpacaMeasurementError) as raised:
+            collector.collect(scope=scope, page_limit=4)
+
+        self.assertEqual(raised.exception.captures, ())
+        self.assertNotIn(secret, repr(raised.exception) + str(raised.exception))
 
     def test_empty_null_is_explicit_data_unavailable(self) -> None:
         collector, _, scope = _collector((_Response(_body([], None)),))

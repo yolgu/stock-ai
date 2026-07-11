@@ -157,7 +157,7 @@ class HttpResponse:
         return f"HttpResponse(status={self.status!r}, headers=<redacted>, body=<{body_size} bytes>)"
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, repr=False)
 class RawHttpCapture:
     endpoint_id: str
     method: str
@@ -168,6 +168,20 @@ class RawHttpCapture:
     received_at: str
     body_base64: str
     body_sha256: str
+
+    def __repr__(self) -> str:
+        return (
+            "RawHttpCapture("
+            f"endpoint_id={self.endpoint_id!r}, "
+            f"method={self.method!r}, "
+            "sanitized_url=<redacted>, "
+            "query=<redacted>, "
+            f"status={self.status!r}, "
+            "headers=<redacted>, "
+            f"received_at={self.received_at!r}, "
+            "body=<redacted>, "
+            f"body_sha256={self.body_sha256!r})"
+        )
 
 
 @dataclass(frozen=True)

@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import re
-from collections.abc import Mapping, MutableMapping
+from collections.abc import Mapping, MutableMapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from urllib.parse import parse_qsl, urlencode, urlsplit
@@ -54,7 +56,7 @@ class AlpacaCredentialCapability:
     def __repr__(self) -> str:
         return "AlpacaCredentialCapability(<redacted>)"
 
-    def authorized_headers(self) -> Mapping[str, str]:
+    def _authorized_headers(self) -> Mapping[str, str]:
         return {
             "Accept": "application/json",
             "APCA-API-KEY-ID": self._key_id,
@@ -76,6 +78,17 @@ class AlpacaCredentialCapability:
             and normalized.get("accept") == "application/json"
             and normalized.get("apca-api-key-id") == self._key_id
             and normalized.get("apca-api-secret-key") == self._secret_key
+        )
+
+    def contains_sensitive(
+        self,
+        body: bytes,
+        additional_values: Sequence[str] = (),
+    ) -> bool:
+        """Return only whether a body contains credentials or request-bound secrets."""
+        return _body_contains_exact_values(
+            body,
+            (self._key_id, self._secret_key, *tuple(additional_values)),
         )
 
 
@@ -103,7 +116,7 @@ class StrictAlpacaBarsTransport:
         request = HttpRequest(
             method="GET",
             url=url,
-            headers=self._credentials.authorized_headers(),
+            headers=self._credentials._authorized_headers(),
         )
         return self(request)
 
@@ -114,12 +127,21 @@ class StrictAlpacaBarsTransport:
             headers=dict(request.headers),
             method="GET",
         )
-        return _open_http_response(
+        response = _open_http_response(
             self._opener,
             outgoing,
             _RESPONSE_LIMIT_BYTES,
             "alpaca_transport_error",
         )
+        page_token = _page_token_from_url(request.url)
+        additional_values = (
+            ()
+            if page_token is None or 200 <= response.status < 300
+            else (page_token,)
+        )
+        if self._credentials.contains_sensitive(response.body, additional_values):
+            raise ReadOnlyBoundaryError("sensitive_response_body")
+        return response
 
     def _validate_request(self, request: HttpRequest) -> None:
         if not isinstance(request, HttpRequest) or request.method != "GET":
@@ -236,6 +258,72 @@ def _valid_page_token(value: object) -> bool:
         and len(value) <= 4096
         and not any(character in value for character in "\r\n\x00")
     )
+
+
+def _sanitized_capture_url_and_query(
+    actual_url: str,
+    page_token: str | None,
+) -> tuple[str, tuple[tuple[str, str], ...]]:
+    parsed = urlsplit(actual_url)
+    query = list(
+        parse_qsl(
+            parsed.query,
+            keep_blank_values=True,
+            strict_parsing=True,
+        )
+    )
+    if page_token is not None:
+        if not query or query[-1] != ("page_token", page_token):
+            raise ReadOnlyBoundaryError("capture_cursor_binding_invalid")
+        cursor_sha256 = hashlib.sha256(page_token.encode("utf-8")).hexdigest()
+        query[-1] = ("page_token_sha256", cursor_sha256)
+    sanitized_url = f"{parsed.scheme}://{parsed.netloc}{parsed.path}?{urlencode(query)}"
+    return sanitized_url, tuple(query)
+
+
+def _page_token_from_url(url: str) -> str | None:
+    query = parse_qsl(
+        urlsplit(url).query,
+        keep_blank_values=True,
+        strict_parsing=True,
+    )
+    return next((value for name, value in query if name == "page_token"), None)
+
+
+def _body_contains_exact_values(
+    body: object,
+    sensitive_values: Sequence[str],
+) -> bool:
+    if not isinstance(body, bytes):
+        return True
+    values = tuple(
+        value
+        for value in sensitive_values
+        if isinstance(value, str) and value
+    )
+    if any(value.encode("utf-8") in body for value in values):
+        return True
+    try:
+        decoded = json.loads(body.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError, RecursionError):
+        return False
+    pending: list[object] = [decoded]
+    while pending:
+        current = pending.pop()
+        if isinstance(current, dict):
+            for key, value in current.items():
+                if any(secret in key for secret in values):
+                    return True
+                pending.append(value)
+            continue
+        if isinstance(current, list):
+            pending.extend(current)
+            continue
+        if isinstance(current, str) and any(
+            secret in current for secret in values
+        ):
+            return True
+    return False
 
 
 def _url_has_exact_origin_and_path(

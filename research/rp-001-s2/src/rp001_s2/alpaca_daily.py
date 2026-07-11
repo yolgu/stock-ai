@@ -6,10 +6,11 @@ import base64
 import hashlib
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, time as datetime_time, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from urllib.parse import parse_qsl, urlencode, urlsplit
 from urllib.request import Request, build_opener
+from zoneinfo import ZoneInfo
 
 from rp001.toss_research_collector import (
     CanonicalScalar,
@@ -25,6 +26,8 @@ from rp001.toss_research_collector import (
 from rp001_s2.alpaca_boundary import (
     AlpacaCredentialCapability,
     _US_SYMBOL,
+    _page_token_from_url,
+    _sanitized_capture_url_and_query,
 )
 from rp001_s2.archive_contract import CollectionScope
 from rp001_s2.toss_boundary import (
@@ -48,6 +51,7 @@ _BAR_FIELDS = frozenset({"t", "o", "h", "l", "c", "v", "n", "vw"})
 _MAX_ROWS_PER_PAGE = 10_000
 _MAX_PAGE_COUNT = 64
 _MAX_PAGE_TOKEN_LENGTH = 4096
+_NEW_YORK = ZoneInfo("America/New_York")
 _ALLOWED_CAPTURE_HEADERS = frozenset(
     {
         "content-type",
@@ -138,7 +142,7 @@ class StrictAlpacaDailyTransport:
             HttpRequest(
                 method="GET",
                 url=url,
-                headers=self._credentials.authorized_headers(),
+                headers=self._credentials._authorized_headers(),
             )
         )
 
@@ -149,12 +153,21 @@ class StrictAlpacaDailyTransport:
             headers=dict(request.headers),
             method="GET",
         )
-        return _open_http_response(
+        response = _open_http_response(
             self._opener,
             outgoing,
             _RESPONSE_LIMIT_BYTES,
             "alpaca_daily_transport_error",
         )
+        page_token = _page_token_from_url(request.url)
+        additional_values = (
+            ()
+            if page_token is None or 200 <= response.status < 300
+            else (page_token,)
+        )
+        if self._credentials.contains_sensitive(response.body, additional_values):
+            raise ReadOnlyBoundaryError("sensitive_response_body")
+        return response
 
     def _validate_request(self, request: HttpRequest) -> None:
         if not isinstance(request, HttpRequest) or request.method != "GET":
@@ -381,10 +394,13 @@ def _daily_url(scope: CollectionScope, page_token: str | None) -> str:
 
 
 def _daily_query(scope: CollectionScope) -> list[tuple[str, str]]:
+    first_session_midnight = _new_york_midnight_utc(scope.start_at.date())
+    last_session_date = scope.end_at.date() - timedelta(days=1)
+    last_session_midnight = _new_york_midnight_utc(last_session_date)
     return [
         ("timeframe", "1Day"),
-        ("start", _format_utc(scope.start_at)),
-        ("end", _format_utc(scope.end_at - timedelta(days=1))),
+        ("start", _format_utc(first_session_midnight)),
+        ("end", _format_utc(last_session_midnight)),
         ("limit", "10000"),
         ("adjustment", scope.adjustment_mode),
         ("asof", "-"),
@@ -421,13 +437,10 @@ def _capture_response(
         received_at = _utc_timestamp(clock)
     except CollectorError:
         raise AlpacaDailyError("CLOCK_INVALID") from None
-    url = _daily_url(scope, requested_page_token)
-    query = tuple(
-        parse_qsl(
-            urlsplit(url).query,
-            keep_blank_values=True,
-            strict_parsing=True,
-        )
+    actual_url = _daily_url(scope, requested_page_token)
+    url, query = _sanitized_capture_url_and_query(
+        actual_url,
+        requested_page_token,
     )
     headers = _capture_headers(response.headers)
     return RawHttpCapture(
@@ -532,7 +545,10 @@ def _parse_row(
     source_timestamp = value["t"]
     if not isinstance(source_timestamp, str):
         raise AlpacaDailyError("INVALID_RESPONSE_SHAPE", (capture,))
-    instant = _utc_midnight(source_timestamp, capture)
+    instant, session_date, bar_end_instant = _new_york_session(
+        source_timestamp,
+        capture,
+    )
     numeric_fields = {
         name: _numeric_scalar(value[name], capture)
         for name in ("o", "h", "l", "c", "v", "n", "vw")
@@ -554,8 +570,7 @@ def _parse_row(
         vwap[1],
     ):
         raise AlpacaDailyError("BAR_INVARIANT", (capture,))
-    bar_end_instant = instant + timedelta(days=1)
-    if not scope.start_at <= instant < scope.end_at or bar_end_instant > scope.end_at:
+    if not scope.start_at.date() <= session_date < scope.end_at.date():
         raise AlpacaDailyError("BAR_OUTSIDE_SCOPE", (capture,))
     try:
         received_at = _parse_timestamp(capture.received_at, capture)
@@ -589,18 +604,33 @@ def _parse_row(
     )
 
 
-def _utc_midnight(value: object, capture: RawHttpCapture) -> datetime:
+def _new_york_session(
+    value: object,
+    capture: RawHttpCapture,
+) -> tuple[datetime, date, datetime]:
     if not isinstance(value, str):
         raise AlpacaDailyError("INVALID_RESPONSE_SHAPE", (capture,))
     try:
-        parsed = datetime.fromisoformat(
-            value[:-1] + "+00:00" if value.endswith("Z") else value
-        )
-        if parsed.tzinfo is None or not _is_utc_midnight(parsed):
+        instant = _parse_timestamp(value, capture)
+        local = instant.astimezone(_NEW_YORK)
+        if local.time().replace(tzinfo=None) != datetime_time(0, 0):
             raise ValueError
-        return parsed.astimezone(timezone.utc)
-    except (ValueError, TypeError, OverflowError, OSError):
+        session_date = local.date()
+        expected = _new_york_midnight_utc(session_date)
+        if instant != expected:
+            raise ValueError
+        bar_end = _new_york_midnight_utc(session_date + timedelta(days=1))
+        return instant, session_date, bar_end
+    except (CollectorError, ValueError, TypeError, OverflowError, OSError):
         raise AlpacaDailyError("INVALID_RESPONSE_SHAPE", (capture,)) from None
+
+
+def _new_york_midnight_utc(session_date: date) -> datetime:
+    return datetime.combine(
+        session_date,
+        datetime_time(0, 0),
+        tzinfo=_NEW_YORK,
+    ).astimezone(timezone.utc)
 
 
 def _numeric_scalar(
