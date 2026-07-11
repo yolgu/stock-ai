@@ -5,11 +5,14 @@ from __future__ import annotations
 import json
 import re
 import stat
+import urllib.error
 import urllib.parse
+import urllib.request
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Protocol
 
 from rp001.local_evidence import (
     LocalArtifactBinding,
@@ -26,6 +29,7 @@ _END_DATETIME = "20260711000000"
 _MODES = frozenset({"timelinevolraw", "timelinetone"})
 _REQUEST_INTERVAL_SECONDS = 10.0
 _RATE_LIMIT_BACKOFF_SECONDS = (30.0, 60.0, 120.0)
+_MAX_RESPONSE_BYTES = 2 * 1024 * 1024
 _TICKER_PROXY_SYMBOLS = ("TSLA", "NVDA", "AAPL")
 _FROZEN_SYMBOLS = tuple(sorted((*PRIORITY_SYMBOLS, *BENCHMARK_SYMBOLS)))
 _IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
@@ -408,6 +412,104 @@ class StoredGdeltScope:
 GdeltTransport = Callable[[GdeltHttpRequest], GdeltHttpResponse]
 
 
+class _ReadableHttpResponse(Protocol):
+    status: int
+    headers: Mapping[str, str]
+
+    def read(self, limit: int) -> bytes: ...
+
+    def close(self) -> None: ...
+
+
+class _GdeltUrlOpener(Protocol):
+    def open(
+        self,
+        request: urllib.request.Request,
+        timeout: int,
+    ) -> _ReadableHttpResponse: ...
+
+
+class _RejectGdeltRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def redirect_request(
+        self,
+        req: urllib.request.Request,
+        fp: object,
+        code: int,
+        msg: str,
+        headers: Mapping[str, str],
+        newurl: str,
+    ) -> None:
+        raise GdeltNewsArchiveError("gdelt_redirect_rejected")
+
+
+class StrictGdeltTransport:
+    """Execute only the frozen read-only GDELT DOC request contract."""
+
+    def __init__(
+        self,
+        *,
+        opener: _GdeltUrlOpener,
+        response_limit_bytes: int = _MAX_RESPONSE_BYTES,
+    ) -> None:
+        if response_limit_bytes <= 0:
+            raise GdeltNewsArchiveError("gdelt_transport_invalid")
+        self._opener = opener
+        self._response_limit_bytes = response_limit_bytes
+
+    def __call__(self, request: GdeltHttpRequest) -> GdeltHttpResponse:
+        _validate_strict_request(request)
+        outgoing = urllib.request.Request(
+            request.url,
+            method=request.method,
+            headers=dict(request.headers),
+        )
+        try:
+            response = self._opener.open(outgoing, timeout=180)
+            try:
+                status = response.status
+                headers = tuple(
+                    (str(key).lower(), str(value))
+                    for key, value in response.headers.items()
+                )
+                body = response.read(self._response_limit_bytes + 1)
+            finally:
+                response.close()
+        except urllib.error.HTTPError as error:
+            if 300 <= error.code < 400:
+                raise GdeltNewsArchiveError("gdelt_redirect_rejected") from None
+            status = error.code
+            headers = tuple(
+                (str(key).lower(), str(value))
+                for key, value in error.headers.items()
+            )
+            body = error.read(self._response_limit_bytes + 1)
+            error.close()
+        except OSError:
+            return GdeltHttpResponse(
+                status=0,
+                headers=(("content-type", "application/json"),),
+                body=canonical_json_bytes(
+                    {
+                        "schemaVersion": (
+                            "rp001-s2-gdelt-transport-failure.v1"
+                        ),
+                        "errorCode": "gdelt_transport_oserror",
+                    }
+                ),
+            )
+        if 300 <= status < 400:
+            raise GdeltNewsArchiveError("gdelt_redirect_rejected")
+        if len(body) > self._response_limit_bytes:
+            raise GdeltNewsArchiveError("gdelt_response_too_large")
+        return GdeltHttpResponse(status=status, headers=headers, body=body)
+
+
+def build_live_gdelt_transport() -> StrictGdeltTransport:
+    """Build the production transport with redirects disabled."""
+    opener = urllib.request.build_opener(_RejectGdeltRedirectHandler())
+    return StrictGdeltTransport(opener=opener)
+
+
 class GlobalGdeltWorker:
     """Run DOC queries serially under one global request-start clock."""
 
@@ -544,6 +646,13 @@ class GdeltArchiveStorage:
             stored = self._stored_from_manifest(manifest_path)
             self.verify_scope(stored)
             return stored
+        recovered = self.recover_partial_scope(
+            query_map_binding,
+            outcome.scope,
+            recovered_at=outcome.attempts[-1].received_at,
+        )
+        if recovered is not None:
+            return recovered
         attempt_bindings: list[dict[str, object]] = []
         raw_paths: list[Path] = []
         metadata_paths: list[Path] = []
@@ -597,6 +706,112 @@ class GdeltArchiveStorage:
         self.verify_scope(stored)
         return stored
 
+    def recover_partial_scope(
+        self,
+        query_map_binding: LocalArtifactBinding,
+        scope: GdeltNewsScope,
+        *,
+        recovered_at: str,
+    ) -> StoredGdeltScope | None:
+        """Seal verified orphan artifacts as an explicit invalid terminal."""
+        self._require_query_map_binding(query_map_binding)
+        if not isinstance(scope, GdeltNewsScope):
+            raise GdeltNewsArchiveError("gdelt_scope_invalid")
+        _parse_utc(recovered_at)
+        scope_body = scope.to_canonical_body(query_map_binding.artifact_sha256)
+        scope_sha256 = sha256_bytes(canonical_json_bytes(scope_body))
+        archive_directory = (
+            self._root
+            / "captures"
+            / query_map_binding.artifact_sha256
+            / scope.entry.symbol
+            / scope.mode
+            / scope_sha256
+        )
+        manifest_path = archive_directory / "manifest.json"
+        if manifest_path.exists() or Path(f"{manifest_path}.sha256").exists():
+            stored = self._stored_from_manifest(manifest_path)
+            self.verify_scope(stored)
+            return stored
+        if not archive_directory.exists():
+            return None
+        artifacts: list[dict[str, object]] = []
+        raw_paths: list[Path] = []
+        metadata_paths: list[Path] = []
+        artifact_paths = sorted(
+            path
+            for path in archive_directory.iterdir()
+            if not path.name.endswith(".sha256")
+        )
+        if not artifact_paths:
+            return None
+        for path in artifact_paths:
+            match = re.fullmatch(
+                r"attempt-([0-9]{3})\.(body\.(?:json|txt)|metadata\.json)",
+                path.name,
+            )
+            if match is None:
+                raise GdeltNewsArchiveError(
+                    "gdelt_archive_verification_failed"
+                )
+            source = _verified_bytes(path)
+            binding = LocalArtifactBinding(
+                path=path,
+                sidecar_path=Path(f"{path}.sha256"),
+                artifact_sha256=sha256_bytes(source),
+            )
+            kind = "metadata" if match.group(2) == "metadata.json" else "body"
+            artifacts.append(
+                {
+                    "ordinal": int(match.group(1)),
+                    "kind": kind,
+                    "artifact": {
+                        **_binding_body(binding, self._root),
+                        "byteLength": len(source),
+                    },
+                }
+            )
+            if kind == "body":
+                raw_paths.append(path)
+            else:
+                metadata_paths.append(path)
+        expected_files = {
+            item
+            for path in artifact_paths
+            for item in (path, Path(f"{path}.sha256"))
+        }
+        actual_files = {
+            path
+            for path in archive_directory.iterdir()
+            if path.is_file() or path.is_symlink()
+        }
+        if actual_files != expected_files:
+            raise GdeltNewsArchiveError("gdelt_archive_verification_failed")
+        manifest_body: dict[str, object] = {
+            "schemaVersion": "rp001-s2-gdelt-partial-recovery-manifest.v1",
+            "scope": scope_body,
+            "scopeSha256": scope_sha256,
+            "queryMap": _binding_body(query_map_binding, self._root),
+            "partialArtifacts": artifacts,
+            "terminal": {
+                "status": "invalid",
+                "reason": "partial_attempt_without_terminal_manifest",
+            },
+            "recoveredAt": recovered_at,
+        }
+        manifest_binding = self._store.publish_json(manifest_path, manifest_body)
+        stored = StoredGdeltScope(
+            scope_sha256=scope_sha256,
+            archive_directory=archive_directory,
+            raw_body_paths=tuple(raw_paths),
+            metadata_paths=tuple(metadata_paths),
+            manifest_path=manifest_binding.path,
+            manifest_sha256_path=manifest_binding.sidecar_path,
+            manifest_sha256=manifest_binding.artifact_sha256,
+        )
+        self.verify_scope(stored)
+        return stored
+
     def verify_scope(self, stored: StoredGdeltScope) -> None:
         try:
             self._verify_scope(stored)
@@ -615,9 +830,13 @@ class GdeltArchiveStorage:
         if stored.manifest_sha256_path != Path(f"{stored.manifest_path}.sha256"):
             raise ValueError
         manifest = _canonical_object(manifest_source)
+        schema_version = manifest.get("schemaVersion")
         if (
-            manifest.get("schemaVersion")
-            != "rp001-s2-gdelt-news-manifest.v1"
+            schema_version
+            not in {
+                "rp001-s2-gdelt-news-manifest.v1",
+                "rp001-s2-gdelt-partial-recovery-manifest.v1",
+            }
             or manifest.get("scopeSha256") != stored.scope_sha256
             or sha256_bytes(canonical_json_bytes(manifest.get("scope")))
             != stored.scope_sha256
@@ -625,25 +844,59 @@ class GdeltArchiveStorage:
             raise ValueError
         query_map = _binding_from_body(manifest.get("queryMap"), self._root)
         self._require_query_map_binding(query_map)
+        scope = manifest.get("scope")
+        query_map_body = _canonical_object(
+            _verified_bytes(query_map.path, query_map.artifact_sha256)
+        )
+        _validate_scope_binding(scope, query_map_body, query_map.artifact_sha256)
+        if schema_version == "rp001-s2-gdelt-partial-recovery-manifest.v1":
+            self._verify_recovery_scope(stored, manifest)
+            return
         attempts = manifest.get("attempts")
         if not isinstance(attempts, list) or not attempts:
             raise ValueError
         raw_paths: list[Path] = []
         metadata_paths: list[Path] = []
         expected_files = {stored.manifest_path, stored.manifest_sha256_path}
-        for value in attempts:
+        statuses: list[int] = []
+        valid_bodies: list[bool] = []
+        for ordinal, value in enumerate(attempts, start=1):
             if not isinstance(value, dict):
                 raise ValueError
-            raw = _binding_from_body(value.get("body"), self._root)
+            status = value.get("status")
+            if (
+                type(status) is not int
+                or not 0 <= status <= 599
+                or value.get("ordinal", ordinal) != ordinal
+            ):
+                raise ValueError
+            raw = _binding_from_body(
+                value.get("body"),
+                self._root,
+                allow_byte_length=True,
+            )
             metadata = _binding_from_body(value.get("metadata"), self._root)
-            _verified_bytes(raw.path, raw.artifact_sha256)
+            raw_source = _verified_bytes(raw.path, raw.artifact_sha256)
             metadata_source = _verified_bytes(
                 metadata.path,
                 metadata.artifact_sha256,
             )
-            _canonical_object(metadata_source)
+            metadata_body = _canonical_object(metadata_source)
+            _validate_attempt_binding(
+                ordinal=ordinal,
+                status=status,
+                raw=raw,
+                raw_source=raw_source,
+                metadata=metadata,
+                metadata_body=metadata_body,
+                scope=scope,
+                manifest_body_binding=value.get("body"),
+                archive_directory=stored.archive_directory,
+            )
             raw_paths.append(raw.path)
             metadata_paths.append(metadata.path)
+            statuses.append(status)
+            valid_bodies.append(_valid_timeline_json(raw_source))
             expected_files.update(
                 {
                     raw.path,
@@ -667,15 +920,144 @@ class GdeltArchiveStorage:
         }
         if actual_files != expected_files:
             raise ValueError
+        _validate_terminal_binding(
+            manifest.get("terminal"),
+            statuses,
+            valid_bodies,
+        )
+        completed_at = manifest.get("completedAt")
+        if not isinstance(completed_at, str):
+            raise ValueError
+        if _parse_utc(completed_at) < _parse_utc(
+            str(_canonical_object(_verified_bytes(
+                metadata_paths[-1]
+            )).get("receivedAt"))
+        ):
+            raise ValueError
+
+    def _verify_recovery_scope(
+        self,
+        stored: StoredGdeltScope,
+        manifest: dict[str, object],
+    ) -> None:
+        if manifest.get("terminal") != {
+            "status": "invalid",
+            "reason": "partial_attempt_without_terminal_manifest",
+        }:
+            raise ValueError
+        recovered_at = manifest.get("recoveredAt")
+        if not isinstance(recovered_at, str):
+            raise ValueError
+        _parse_utc(recovered_at)
+        artifacts = manifest.get("partialArtifacts")
+        if not isinstance(artifacts, list) or not artifacts:
+            raise ValueError
+        raw_paths: list[Path] = []
+        metadata_paths: list[Path] = []
+        expected_files = {stored.manifest_path, stored.manifest_sha256_path}
+        previous_key: tuple[int, str] | None = None
+        for value in artifacts:
+            if not isinstance(value, dict):
+                raise ValueError
+            ordinal = value.get("ordinal")
+            kind = value.get("kind")
+            if type(ordinal) is not int or ordinal <= 0 or kind not in {"body", "metadata"}:
+                raise ValueError
+            key = (ordinal, str(kind))
+            if previous_key is not None and key <= previous_key:
+                raise ValueError
+            previous_key = key
+            binding_body = value.get("artifact")
+            binding = _binding_from_body(
+                binding_body,
+                self._root,
+                allow_byte_length=True,
+            )
+            source = _verified_bytes(binding.path, binding.artifact_sha256)
+            if not isinstance(binding_body, dict) or binding_body.get("byteLength") != len(source):
+                raise ValueError
+            expected_name = (
+                f"attempt-{ordinal:03d}.metadata.json"
+                if kind == "metadata"
+                else rf"attempt-{ordinal:03d}.body.(?:json|txt)"
+            )
+            if (
+                binding.path.parent != stored.archive_directory
+                or (
+                    kind == "metadata"
+                    and binding.path.name != expected_name
+                )
+                or (
+                    kind == "body"
+                    and re.fullmatch(expected_name, binding.path.name) is None
+                )
+            ):
+                raise ValueError
+            if kind == "body":
+                raw_paths.append(binding.path)
+            else:
+                metadata_paths.append(binding.path)
+            expected_files.update({binding.path, binding.sidecar_path})
+        if (
+            tuple(raw_paths) != stored.raw_body_paths
+            or tuple(metadata_paths) != stored.metadata_paths
+            or stored.archive_directory != stored.manifest_path.parent
+        ):
+            raise ValueError
+        actual_files = {
+            path
+            for path in stored.archive_directory.iterdir()
+            if path.is_file() or path.is_symlink()
+        }
+        if actual_files != expected_files:
+            raise ValueError
 
     def _stored_from_manifest(self, manifest_path: Path) -> StoredGdeltScope:
         manifest_source = _verified_bytes(manifest_path)
         manifest = _canonical_object(manifest_source)
+        if (
+            manifest.get("schemaVersion")
+            == "rp001-s2-gdelt-partial-recovery-manifest.v1"
+        ):
+            artifacts = manifest.get("partialArtifacts")
+            if not isinstance(artifacts, list):
+                raise GdeltNewsArchiveError("gdelt_archive_verification_failed")
+            raw_paths = tuple(
+                _binding_from_body(
+                    value.get("artifact"),
+                    self._root,
+                    allow_byte_length=True,
+                ).path
+                for value in artifacts
+                if isinstance(value, dict) and value.get("kind") == "body"
+            )
+            metadata_paths = tuple(
+                _binding_from_body(
+                    value.get("artifact"),
+                    self._root,
+                    allow_byte_length=True,
+                ).path
+                for value in artifacts
+                if isinstance(value, dict) and value.get("kind") == "metadata"
+            )
+            return StoredGdeltScope(
+                scope_sha256=str(manifest.get("scopeSha256")),
+                archive_directory=manifest_path.parent,
+                raw_body_paths=raw_paths,
+                metadata_paths=metadata_paths,
+                manifest_path=manifest_path,
+                manifest_sha256_path=Path(f"{manifest_path}.sha256"),
+                manifest_sha256=sha256_bytes(manifest_source),
+            )
         attempts = manifest.get("attempts")
         if not isinstance(attempts, list):
             raise GdeltNewsArchiveError("gdelt_archive_verification_failed")
         raw_paths = tuple(
-            _binding_from_body(value.get("body"), self._root).path
+            _binding_from_body(
+                value.get("body"),
+                self._root,
+                allow_byte_length=True,
+            ).path
             for value in attempts
             if isinstance(value, dict)
         )
@@ -736,6 +1118,60 @@ def _request_for_scope(scope: GdeltNewsScope) -> GdeltHttpRequest:
     )
 
 
+def _validate_strict_request(request: GdeltHttpRequest) -> None:
+    if not isinstance(request, GdeltHttpRequest) or request.method != "GET":
+        raise GdeltNewsArchiveError("gdelt_request_not_allowed")
+    parsed = urllib.parse.urlsplit(request.url)
+    if (
+        parsed.scheme != "https"
+        or parsed.netloc != "api.gdeltproject.org"
+        or parsed.hostname != "api.gdeltproject.org"
+        or parsed.port is not None
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.path != "/api/v2/doc/doc"
+        or parsed.fragment
+    ):
+        raise GdeltNewsArchiveError("gdelt_request_not_allowed")
+    try:
+        pairs = urllib.parse.parse_qsl(
+            parsed.query,
+            keep_blank_values=True,
+            strict_parsing=True,
+        )
+    except ValueError:
+        raise GdeltNewsArchiveError("gdelt_request_not_allowed") from None
+    query = dict(pairs)
+    frozen_queries = {
+        f'"{company_name}"'
+        for company_name in _CANONICAL_COMPANY_NAMES.values()
+    } | set(_TICKER_PROXY_SYMBOLS)
+    if (
+        len(pairs) != len(query)
+        or set(query)
+        != {
+            "query",
+            "mode",
+            "format",
+            "startdatetime",
+            "enddatetime",
+            "timelinesmooth",
+        }
+        or query["query"] not in frozen_queries
+        or query["mode"] not in _MODES
+        or query["format"] != "json"
+        or query["startdatetime"] != _START_DATETIME
+        or query["enddatetime"] != _END_DATETIME
+        or query["timelinesmooth"] != "0"
+        or request.headers
+        != (
+            ("Accept", "application/json"),
+            ("User-Agent", "RP-001 research collector (zero-cost, read-only)"),
+        )
+    ):
+        raise GdeltNewsArchiveError("gdelt_request_not_allowed")
+
+
 def _attempt_metadata(
     attempt: GdeltAttempt,
     body_binding: LocalArtifactBinding,
@@ -746,10 +1182,19 @@ def _attempt_metadata(
         "attempt": attempt.ordinal,
         "method": attempt.request.method,
         "endpoint": _ENDPOINT,
+        "mode": urllib.parse.parse_qs(
+            urllib.parse.urlsplit(attempt.request.url).query
+        )["mode"][0],
+        "querySha256": sha256_bytes(
+            urllib.parse.parse_qs(
+                urllib.parse.urlsplit(attempt.request.url).query
+            )["query"][0].encode("utf-8")
+        ),
         "requestUrlSha256": sha256_bytes(attempt.request.url.encode("utf-8")),
         "requestStartedAt": attempt.request_started_at,
         "receivedAt": attempt.received_at,
         "status": attempt.response.status,
+        "contentType": _response_content_type(attempt.response.headers),
         "headers": [
             [key.lower(), value] for key, value in attempt.response.headers
         ],
@@ -758,6 +1203,197 @@ def _attempt_metadata(
             "byteLength": len(attempt.response.body),
         },
     }
+
+
+def _validate_scope_binding(
+    scope: object,
+    query_map: dict[str, object],
+    query_map_sha256: str,
+) -> None:
+    if not isinstance(scope, dict) or scope.get("queryMapSha256") != query_map_sha256:
+        raise GdeltNewsArchiveError("gdelt_scope_binding_invalid")
+    contract = query_map.get("queryContract")
+    entries = query_map.get("entries")
+    if not isinstance(contract, dict) or not isinstance(entries, list):
+        raise GdeltNewsArchiveError("gdelt_scope_binding_invalid")
+    matches = [
+        entry
+        for entry in entries
+        if isinstance(entry, dict)
+        and entry.get("instrumentId") == scope.get("instrumentId")
+        and entry.get("symbol") == scope.get("symbol")
+        and entry.get("gdeltQuery") == scope.get("query")
+    ]
+    if (
+        len(matches) != 1
+        or scope.get("schemaVersion") != "rp001-s2-gdelt-news-scope.v1"
+        or scope.get("identityDomain") != "rp001_s2.gdelt_news_scope"
+        or scope.get("mode") not in _MODES
+        or scope.get("mode") not in contract.get("modes", [])
+        or scope.get("startDatetime") != contract.get("startDatetime")
+        or scope.get("endDatetime") != contract.get("endDatetime")
+        or scope.get("format") != contract.get("format")
+        or scope.get("timelineSmooth") != contract.get("timelineSmooth")
+        or contract.get("endpoint") != _ENDPOINT
+    ):
+        raise GdeltNewsArchiveError("gdelt_scope_binding_invalid")
+
+
+def _validate_attempt_binding(
+    *,
+    ordinal: int,
+    status: int,
+    raw: LocalArtifactBinding,
+    raw_source: bytes,
+    metadata: LocalArtifactBinding,
+    metadata_body: dict[str, object],
+    scope: object,
+    manifest_body_binding: object,
+    archive_directory: Path,
+) -> None:
+    if not isinstance(scope, dict):
+        raise GdeltNewsArchiveError("gdelt_attempt_binding_invalid")
+    expected_extension = "json" if status == 200 else "txt"
+    expected_raw_name = f"attempt-{ordinal:03d}.body.{expected_extension}"
+    expected_metadata_name = f"attempt-{ordinal:03d}.metadata.json"
+    expected_query_sha256 = sha256_bytes(str(scope.get("query")).encode("utf-8"))
+    expected_url = _url_for_scope_body(scope)
+    if (
+        raw.path.parent != archive_directory
+        or raw.path.name != expected_raw_name
+        or metadata.path.parent != archive_directory
+        or metadata.path.name != expected_metadata_name
+        or metadata_body.get("schemaVersion")
+        != "rp001-s2-gdelt-raw-capture-metadata.v1"
+        or metadata_body.get("attempt") != ordinal
+        or metadata_body.get("method") != "GET"
+        or metadata_body.get("endpoint") != _ENDPOINT
+        or metadata_body.get("mode") != scope.get("mode")
+        or metadata_body.get("querySha256") != expected_query_sha256
+        or metadata_body.get("status") != status
+        or (
+            "requestUrlSha256" in metadata_body
+            and metadata_body.get("requestUrlSha256")
+            != sha256_bytes(expected_url.encode("utf-8"))
+        )
+        or (
+            "queryKind" in metadata_body
+            and metadata_body.get("queryKind") != "company_name_measure"
+        )
+        or (
+            "evidenceStatus" in metadata_body
+            and metadata_body.get("evidenceStatus") != "research_measure"
+        )
+    ):
+        raise GdeltNewsArchiveError("gdelt_attempt_binding_invalid")
+    metadata_body_binding = metadata_body.get("body")
+    if (
+        not isinstance(metadata_body_binding, dict)
+        or metadata_body_binding.get("path")
+        != raw.path.relative_to(archive_directory.parents[4]).as_posix()
+        or metadata_body_binding.get("sha256") != raw.artifact_sha256
+        or metadata_body_binding.get("byteLength") != len(raw_source)
+        or (
+            isinstance(manifest_body_binding, dict)
+            and "byteLength" in manifest_body_binding
+            and manifest_body_binding.get("byteLength") != len(raw_source)
+        )
+    ):
+        raise GdeltNewsArchiveError("gdelt_attempt_binding_invalid")
+    headers = _normalized_response_headers(metadata_body.get("headers"))
+    content_type = headers.get("content-type")
+    if (
+        "contentType" in metadata_body
+        and metadata_body.get("contentType") != content_type
+    ):
+        raise GdeltNewsArchiveError("gdelt_attempt_binding_invalid")
+    if status in {0, 200} and (
+        content_type is None
+        or not content_type.lower().startswith("application/json")
+    ):
+        raise GdeltNewsArchiveError("gdelt_attempt_binding_invalid")
+    started_at = metadata_body.get("requestStartedAt")
+    received_at = metadata_body.get("receivedAt")
+    if (
+        not isinstance(started_at, str)
+        or not isinstance(received_at, str)
+        or _parse_utc(received_at) < _parse_utc(started_at)
+    ):
+        raise GdeltNewsArchiveError("gdelt_attempt_binding_invalid")
+
+
+def _validate_terminal_binding(
+    terminal: object,
+    statuses: list[int],
+    valid_bodies: list[bool],
+) -> None:
+    if not isinstance(terminal, dict) or not statuses:
+        raise GdeltNewsArchiveError("gdelt_terminal_binding_invalid")
+    status = terminal.get("status")
+    reason = terminal.get("reason")
+    final_status = statuses[-1]
+    final_body_valid = valid_bodies[-1]
+    valid = (
+        status == "completed"
+        and reason == "http_200_json_valid"
+        and final_status == 200
+        and final_body_valid
+        or status == "invalid"
+        and reason == "response_contract_invalid"
+        and final_status == 200
+        and not final_body_valid
+        or status == "provider_rate_limited"
+        and reason == "http_429_retry_exhausted"
+        and statuses == [429, 429, 429, 429]
+        or status == "failed"
+        and final_status not in {200, 429}
+        and reason
+        == ("transport_error" if final_status == 0 else f"http_status_{final_status}")
+    )
+    if not valid:
+        raise GdeltNewsArchiveError("gdelt_terminal_binding_invalid")
+
+
+def _normalized_response_headers(value: object) -> dict[str, str]:
+    pairs: list[tuple[str, str]] = []
+    if isinstance(value, dict):
+        pairs = [(str(key).lower(), str(item)) for key, item in value.items()]
+    elif isinstance(value, list):
+        for item in value:
+            if (
+                not isinstance(item, list)
+                or len(item) != 2
+                or not all(isinstance(part, str) for part in item)
+            ):
+                raise GdeltNewsArchiveError("gdelt_headers_invalid")
+            pairs.append((item[0].lower(), item[1]))
+    else:
+        raise GdeltNewsArchiveError("gdelt_headers_invalid")
+    normalized = dict(pairs)
+    if len(normalized) != len(pairs):
+        raise GdeltNewsArchiveError("gdelt_headers_invalid")
+    return normalized
+
+
+def _response_content_type(
+    headers: tuple[tuple[str, str], ...],
+) -> str | None:
+    normalized = {key.lower(): value for key, value in headers}
+    return normalized.get("content-type")
+
+
+def _url_for_scope_body(scope: Mapping[str, object]) -> str:
+    query = urllib.parse.urlencode(
+        {
+            "query": scope.get("query"),
+            "mode": scope.get("mode"),
+            "format": scope.get("format"),
+            "startdatetime": scope.get("startDatetime"),
+            "enddatetime": scope.get("endDatetime"),
+            "timelinesmooth": str(scope.get("timelineSmooth")),
+        }
+    )
+    return f"{_ENDPOINT}?{query}"
 
 
 def _binding_body(
@@ -771,8 +1407,37 @@ def _binding_body(
     return {"path": relative, "sha256": binding.artifact_sha256}
 
 
-def _binding_from_body(value: object, root: Path) -> LocalArtifactBinding:
-    if not isinstance(value, dict) or set(value) != {"path", "sha256"}:
+def _binding_from_body(
+    value: object,
+    root: Path,
+    *,
+    allow_byte_length: bool = False,
+) -> LocalArtifactBinding:
+    return _binding_from_body_contract(
+        value,
+        root,
+        allow_byte_length=allow_byte_length,
+    )
+
+
+def _binding_from_body_contract(
+    value: object,
+    root: Path,
+    *,
+    allow_byte_length: bool,
+) -> LocalArtifactBinding:
+    expected_keys = {"path", "sha256"}
+    if allow_byte_length:
+        expected_keys.add("byteLength")
+    if (
+        not isinstance(value, dict)
+        or not {"path", "sha256"}.issubset(value)
+        or not set(value).issubset(expected_keys)
+        or (
+            "byteLength" in value
+            and (type(value.get("byteLength")) is not int or value["byteLength"] < 0)
+        )
+    ):
         raise GdeltNewsArchiveError("gdelt_archive_binding_invalid")
     relative = value.get("path")
     artifact_sha256 = value.get("sha256")

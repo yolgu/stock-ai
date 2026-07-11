@@ -3,17 +3,25 @@ from __future__ import annotations
 import json
 import tempfile
 import unittest
+import urllib.parse
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from rp001.local_evidence import canonical_json_bytes, sha256_bytes
+from rp001.local_evidence import (
+    LocalArtifactStore,
+    canonical_json_bytes,
+    sha256_bytes,
+)
 from rp001_s2.archive_contract import BENCHMARK_SYMBOLS, PRIORITY_SYMBOLS
 from rp001_s2.gdelt_news_archive import (
     GdeltArchiveStorage,
+    GdeltHttpRequest,
     GdeltHttpResponse,
     GdeltNewsScope,
     GdeltQueryEntry,
     GlobalGdeltWorker,
+    StrictGdeltTransport,
     build_gdelt_query_map,
     build_gdelt_ticker_proxy_map,
 )
@@ -82,6 +90,75 @@ class _SequenceTransport:
         self.started_at.append(self._time.monotonic())
         self.requests.append(request)
         return self._responses.pop(0)
+
+
+class _HttpFixture:
+    def __init__(
+        self,
+        *,
+        status: int = 200,
+        headers: tuple[tuple[str, str], ...] = (
+            ("content-type", "application/json"),
+        ),
+        body: bytes = b'{"query_details":{},"timeline":[]}',
+    ) -> None:
+        self.status = status
+        self.headers = dict(headers)
+        self._body = body
+
+    def read(self, limit: int) -> bytes:
+        return self._body[:limit]
+
+    def close(self) -> None:
+        pass
+
+
+class _FixtureOpener:
+    def __init__(self, result: _HttpFixture | OSError) -> None:
+        self._result = result
+        self.requests: list[object] = []
+
+    def open(self, request: object, timeout: int) -> _HttpFixture:
+        self.requests.append((request, timeout))
+        if isinstance(self._result, OSError):
+            raise self._result
+        return self._result
+
+
+def _strict_request(**changes: str) -> GdeltHttpRequest:
+    values = {
+        "query": '"Tesla Inc"',
+        "mode": "timelinevolraw",
+        "format": "json",
+        "startdatetime": "20260412000000",
+        "enddatetime": "20260711000000",
+        "timelinesmooth": "0",
+    }
+    values.update({key: value for key, value in changes.items() if key in values})
+    url = changes.get(
+        "url",
+        "https://api.gdeltproject.org/api/v2/doc/doc?"
+        + urllib.parse.urlencode(values),
+    )
+    return GdeltHttpRequest(
+        method=changes.get("method", "GET"),
+        url=url,
+        headers=(
+            ("Accept", "application/json"),
+            ("User-Agent", "RP-001 research collector (zero-cost, read-only)"),
+        ),
+    )
+
+
+def _rewrite_canonical_artifact(path: Path, value: object) -> str:
+    source = canonical_json_bytes(value)
+    artifact_sha256 = sha256_bytes(source)
+    path.write_bytes(source)
+    Path(f"{path}.sha256").write_text(
+        f"{artifact_sha256}\n",
+        encoding="ascii",
+    )
+    return artifact_sha256
 
 
 class GdeltQueryMapTest(unittest.TestCase):
@@ -224,6 +301,99 @@ class GlobalGdeltWorkerTest(unittest.TestCase):
         self.assertEqual(controlled.sleeps, [30.0, 60.0, 120.0])
 
 
+class StrictGdeltTransportTest(unittest.TestCase):
+    def test_allows_only_exact_frozen_get_request(self) -> None:
+        opener = _FixtureOpener(_HttpFixture())
+        transport = StrictGdeltTransport(opener=opener)
+
+        response = transport(_strict_request())
+
+        self.assertEqual(response.status, 200)
+        self.assertEqual(len(opener.requests), 1)
+        invalid_requests = (
+            _strict_request(method="POST"),
+            _strict_request(
+                url="http://api.gdeltproject.org/api/v2/doc/doc?"
+                + urllib.parse.urlencode(
+                    {
+                        "query": '"Tesla Inc"',
+                        "mode": "timelinevolraw",
+                        "format": "json",
+                        "startdatetime": "20260412000000",
+                        "enddatetime": "20260711000000",
+                        "timelinesmooth": "0",
+                    }
+                )
+            ),
+            _strict_request(
+                url="https://evil.example/api/v2/doc/doc?"
+                + urllib.parse.urlencode(
+                    {
+                        "query": '"Tesla Inc"',
+                        "mode": "timelinevolraw",
+                        "format": "json",
+                        "startdatetime": "20260412000000",
+                        "enddatetime": "20260711000000",
+                        "timelinesmooth": "0",
+                    }
+                )
+            ),
+            _strict_request(
+                url="https://api.gdeltproject.org/api/v2/doc/other?"
+                + urllib.parse.urlencode(
+                    {
+                        "query": '"Tesla Inc"',
+                        "mode": "timelinevolraw",
+                        "format": "json",
+                        "startdatetime": "20260412000000",
+                        "enddatetime": "20260711000000",
+                        "timelinesmooth": "0",
+                    }
+                )
+            ),
+            _strict_request(startdatetime="20260413000000"),
+            _strict_request(mode="artlist"),
+            _strict_request(query='"unfrozen company"'),
+            _strict_request(
+                url=_strict_request().url + "&maxrecords=250",
+            ),
+        )
+        for request in invalid_requests:
+            with self.subTest(request=request):
+                with self.assertRaisesRegex(ValueError, "gdelt_request_not_allowed"):
+                    transport(request)
+        self.assertEqual(len(opener.requests), 1)
+
+    def test_rejects_redirect_response_without_following_it(self) -> None:
+        opener = _FixtureOpener(
+            _HttpFixture(
+                status=302,
+                headers=(("location", "https://evil.example/redirect"),),
+                body=b"redirect",
+            )
+        )
+
+        with self.assertRaisesRegex(ValueError, "gdelt_redirect_rejected"):
+            StrictGdeltTransport(opener=opener)(_strict_request())
+
+    def test_converts_oserror_to_safe_raw_failure_response(self) -> None:
+        transport = StrictGdeltTransport(
+            opener=_FixtureOpener(OSError("secret-bearing local failure"))
+        )
+
+        response = transport(_strict_request())
+
+        self.assertEqual(response.status, 0)
+        self.assertEqual(
+            json.loads(response.body),
+            {
+                "errorCode": "gdelt_transport_oserror",
+                "schemaVersion": "rp001-s2-gdelt-transport-failure.v1",
+            },
+        )
+        self.assertNotIn(b"secret-bearing", response.body)
+
+
 class GdeltArchiveStorageTest(unittest.TestCase):
     def test_publishes_and_verifies_raw_attempts_manifest_and_sidecars(self) -> None:
         query_map = build_gdelt_query_map(
@@ -275,6 +445,153 @@ class GdeltArchiveStorageTest(unittest.TestCase):
             stored.raw_body_paths[0].write_bytes(b"tampered")
             with self.assertRaisesRegex(ValueError, "gdelt_archive_verification_failed"):
                 storage.verify_scope(stored)
+
+    def test_rejects_semantically_tampered_metadata_even_with_valid_hashes(self) -> None:
+        query_map = build_gdelt_query_map(
+            scope_plan_source=_scope_plan_source(),
+            directory_master_source=_directory_source(),
+            frozen_at="2026-07-11T16:10:00Z",
+        )
+        entry = next(value for value in query_map.entries if value.symbol == "TSLA")
+        controlled = _ControlledTime()
+        transport = _SequenceTransport(
+            (
+                GdeltHttpResponse(
+                    status=200,
+                    headers=(("content-type", "application/json"),),
+                    body=b'{"query_details":{},"timeline":[]}',
+                ),
+            )
+        )
+        transport.bind_time(controlled)
+        outcome = GlobalGdeltWorker(
+            transport=transport,
+            monotonic=controlled.monotonic,
+            sleeper=controlled.sleep,
+            utc_clock=controlled.utc_now,
+        ).collect((GdeltNewsScope.for_entry(entry, "timelinevolraw"),))[0]
+
+        mutations = (
+            ("method", "POST"),
+            ("endpoint", "https://evil.example/api/v2/doc/doc"),
+            ("mode", "timelinetone"),
+            ("querySha256", "0" * 64),
+            ("attempt", 2),
+            ("status", 429),
+            ("contentType", "text/plain"),
+        )
+        for field, replacement in mutations:
+            with self.subTest(field=field):
+                with tempfile.TemporaryDirectory() as directory:
+                    root = Path(directory).resolve()
+                    storage = GdeltArchiveStorage(root)
+                    query_binding = storage.publish_query_map(query_map)
+                    stored = storage.publish_outcome(query_binding, outcome)
+                    metadata_path = stored.metadata_paths[0]
+                    metadata = json.loads(metadata_path.read_bytes())
+                    metadata[field] = replacement
+                    metadata_sha256 = _rewrite_canonical_artifact(
+                        metadata_path,
+                        metadata,
+                    )
+                    manifest = json.loads(stored.manifest_path.read_bytes())
+                    manifest["attempts"][0]["metadata"][
+                        "sha256"
+                    ] = metadata_sha256
+                    manifest_sha256 = _rewrite_canonical_artifact(
+                        stored.manifest_path,
+                        manifest,
+                    )
+
+                    with self.assertRaisesRegex(
+                        ValueError,
+                        "gdelt_archive_verification_failed",
+                    ):
+                        storage.verify_scope(
+                            replace(stored, manifest_sha256=manifest_sha256)
+                        )
+
+    def test_persists_oserror_as_failed_terminal_raw_and_metadata(self) -> None:
+        query_map = build_gdelt_query_map(
+            scope_plan_source=_scope_plan_source(),
+            directory_master_source=_directory_source(),
+            frozen_at="2026-07-11T16:10:00Z",
+        )
+        entry = next(value for value in query_map.entries if value.symbol == "TSLA")
+        controlled = _ControlledTime()
+        outcome = GlobalGdeltWorker(
+            transport=StrictGdeltTransport(
+                opener=_FixtureOpener(OSError("secret-bearing local failure"))
+            ),
+            monotonic=controlled.monotonic,
+            sleeper=controlled.sleep,
+            utc_clock=controlled.utc_now,
+        ).collect((GdeltNewsScope.for_entry(entry, "timelinevolraw"),))[0]
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            storage = GdeltArchiveStorage(root)
+            stored = storage.publish_outcome(
+                storage.publish_query_map(query_map),
+                outcome,
+            )
+
+            storage.verify_scope(stored)
+            manifest = json.loads(stored.manifest_path.read_bytes())
+            metadata = json.loads(stored.metadata_paths[0].read_bytes())
+            self.assertEqual(
+                manifest["terminal"],
+                {"status": "failed", "reason": "transport_error"},
+            )
+            self.assertEqual(metadata["status"], 0)
+            self.assertEqual(metadata["contentType"], "application/json")
+            self.assertNotIn(b"secret-bearing", stored.raw_body_paths[0].read_bytes())
+
+    def test_recovers_body_only_partial_attempt_as_explicit_invalid_terminal(self) -> None:
+        query_map = build_gdelt_query_map(
+            scope_plan_source=_scope_plan_source(),
+            directory_master_source=_directory_source(),
+            frozen_at="2026-07-11T16:10:00Z",
+        )
+        entry = next(value for value in query_map.entries if value.symbol == "TSLA")
+        scope = GdeltNewsScope.for_entry(entry, "timelinevolraw")
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            storage = GdeltArchiveStorage(root)
+            query_binding = storage.publish_query_map(query_map)
+            scope_body = scope.to_canonical_body(query_binding.artifact_sha256)
+            scope_sha256 = sha256_bytes(canonical_json_bytes(scope_body))
+            partial_body_path = (
+                root
+                / "captures"
+                / query_binding.artifact_sha256
+                / "TSLA"
+                / "timelinevolraw"
+                / scope_sha256
+                / "attempt-001.body.json"
+            )
+            partial = LocalArtifactStore(root).publish_bytes(
+                partial_body_path,
+                b'{"query_details":{},"timeline":[]}',
+            )
+
+            recovered = storage.recover_partial_scope(
+                query_binding,
+                scope,
+                recovered_at="2026-07-11T16:20:00Z",
+            )
+
+            self.assertIsNotNone(recovered)
+            assert recovered is not None
+            storage.verify_scope(recovered)
+            self.assertEqual(partial.path.read_bytes(), b'{"query_details":{},"timeline":[]}')
+            manifest = json.loads(recovered.manifest_path.read_bytes())
+            self.assertEqual(manifest["terminal"]["status"], "invalid")
+            self.assertEqual(
+                manifest["terminal"]["reason"],
+                "partial_attempt_without_terminal_manifest",
+            )
 
 
 if __name__ == "__main__":
