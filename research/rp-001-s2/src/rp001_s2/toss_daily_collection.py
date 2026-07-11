@@ -252,12 +252,20 @@ class TossDailyBatchSummary:
         return self._count(DailyBatchScopeStatus.INVALID)
 
     @property
+    def blocked_storage_capacity_count(self) -> int:
+        return self._count(DailyBatchScopeStatus.BLOCKED_STORAGE_CAPACITY)
+
+    @property
     def resumed_count(self) -> int:
         return sum(value.resumed_from_verified_archive for value in self.terminals)
 
     @property
     def total_row_count(self) -> int:
         return sum(value.row_count for value in self.terminals)
+
+    @property
+    def total_capture_count(self) -> int:
+        return sum(value.capture_count for value in self.terminals)
 
     def _count(self, status: DailyBatchScopeStatus) -> int:
         return sum(value.status is status for value in self.terminals)
