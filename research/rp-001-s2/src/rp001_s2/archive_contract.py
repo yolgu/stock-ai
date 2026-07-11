@@ -75,6 +75,8 @@ _ACQUISITION_IDENTITY_DOMAIN: str = (
 )
 _ALLOWED_INTERVALS: frozenset[str] = frozenset({"1m", "1d"})
 _FORBIDDEN_IDENTIFIER_CATEGORIES: frozenset[str] = frozenset({"Cc", "Cf"})
+TOSS_LEGACY_MINUTE_FEED: str = "provider_all"
+TOSS_PROVIDER_DATE_DAILY_FEED: str = "provider_date_daily_v2"
 
 
 class InstrumentRole(str, Enum):
@@ -175,6 +177,32 @@ class CollectionScope:
             **self.acquisition_identity_body(),
             "sampleRole": self.sample_role.value,
         }
+
+
+def is_supported_toss_minute_scope(value: object) -> bool:
+    """Accept legacy scopes or one minute-aligned UTC provider-date scope."""
+    if (
+        not isinstance(value, CollectionScope)
+        or value.provider != "toss"
+        or value.interval != "1m"
+        or value.session_scope != "provider_all"
+        or value.adjustment_mode not in {"native", "adjusted"}
+        or value.feed
+        not in {TOSS_LEGACY_MINUTE_FEED, TOSS_PROVIDER_DATE_DAILY_FEED}
+    ):
+        return False
+    if value.feed == TOSS_LEGACY_MINUTE_FEED:
+        return True
+    duration = value.end_at - value.start_at
+    last_included_minute = value.end_at - timedelta(minutes=1)
+    return (
+        value.start_at.second == 0
+        and value.start_at.microsecond == 0
+        and value.end_at.second == 0
+        and value.end_at.microsecond == 0
+        and timedelta(minutes=1) <= duration <= timedelta(days=1)
+        and value.start_at.date() == last_included_minute.date()
+    )
 
 
 @dataclass(frozen=True)

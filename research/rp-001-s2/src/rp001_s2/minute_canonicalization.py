@@ -12,7 +12,10 @@ from rp001_s2.alpaca_measurement import (
     AlpacaMeasuredMinuteBar,
     AlpacaMinuteCollection,
 )
-from rp001_s2.archive_contract import CollectionScope
+from rp001_s2.archive_contract import (
+    CollectionScope,
+    is_supported_toss_minute_scope,
+)
 from rp001_s2.archive_storage import ArchiveStorageError, CanonicalMinuteBar
 from rp001_s2.intraday_measurement import IntradayCandleCollection, MeasuredBar
 
@@ -113,10 +116,7 @@ def _validate_toss_scope(
     except MinuteCanonicalizationError:
         raise MinuteCanonicalizationError("COLLECTION_SCOPE_MISMATCH") from None
     if (
-        scope.provider != "toss"
-        or scope.feed != "provider_all"
-        or scope.interval != "1m"
-        or scope.session_scope != "provider_all"
+        not is_supported_toss_minute_scope(scope)
         or collection.symbol != scope.symbol
         or collection.interval != scope.interval
         or expected_adjusted is None

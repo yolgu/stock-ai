@@ -8,6 +8,7 @@ import unittest
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import parse_qs, urlsplit
 
 from rp001_s2.archive_contract import CollectionScope, SampleRole
 from rp001_s2.toss_intraday_run import (
@@ -42,6 +43,45 @@ class _QueueOpener:
         return self.responses.pop(0)
 
 
+class _ProviderDateOpener:
+    def __init__(self, rows: list[dict[str, str]]) -> None:
+        self.pages_by_before = self._build_pages_by_before(rows)
+        self.requests: list[object] = []
+
+    def open(self, request: object, timeout: float) -> _Response:
+        del timeout
+        self.requests.append(request)
+        if len(self.requests) == 1:
+            return _Response(b'{"access_token":"ephemeral-token"}')
+        full_url = getattr(request, "full_url")
+        before = parse_qs(urlsplit(full_url).query)["before"][0]
+        rows, next_before = self.pages_by_before.get(before, ([], None))
+        return _Response(
+            json.dumps(
+                {"result": {"candles": rows, "nextBefore": next_before}},
+                separators=(",", ":"),
+            ).encode("utf-8")
+        )
+
+    @staticmethod
+    def _build_pages_by_before(
+        rows: list[dict[str, str]],
+    ) -> dict[str, tuple[list[dict[str, str]], str | None]]:
+        pages: dict[str, tuple[list[dict[str, str]], str | None]] = {}
+        cursor = "2026-07-09T23:59:00Z"
+        start = 0
+        while start < len(rows):
+            page = rows[start : start + 200]
+            end = start + len(page)
+            next_before = page[-1]["timestamp"] if end < len(rows) else None
+            pages[cursor] = (page, next_before)
+            if next_before is None:
+                break
+            cursor = next_before
+            start = end - 1
+        return pages
+
+
 def _scope(
     *,
     start_at: datetime = datetime(2026, 7, 1, tzinfo=timezone.utc),
@@ -62,7 +102,112 @@ def _scope(
     )
 
 
+def _provider_date_rows() -> list[dict[str, str]]:
+    retained_minutes = tuple(range(1439, 101, -1)) + (1,)
+    return [
+        {
+            "timestamp": (
+                datetime(2026, 7, 9, tzinfo=timezone.utc)
+                .replace(hour=minute // 60, minute=minute % 60)
+                .isoformat(timespec="seconds")
+                .replace("+00:00", "Z")
+            ),
+            "openPrice": "100",
+            "highPrice": "103",
+            "lowPrice": "99",
+            "closePrice": "102",
+            "volume": "10.500",
+            "currency": "USD",
+        }
+        for minute in retained_minutes
+    ]
+
+
 class TossIntradayRunTest(unittest.TestCase):
+    def test_provider_date_daily_scope_queries_2359_and_preserves_1339_rows(self) -> None:
+        scope = CollectionScope(
+            provider="toss",
+            feed="provider_date_daily_v2",
+            instrument_id="stable-aapl-id",
+            symbol="AAPL",
+            interval="1m",
+            start_at=datetime(2026, 7, 9, tzinfo=timezone.utc),
+            end_at=datetime(2026, 7, 10, tzinfo=timezone.utc),
+            adjustment_mode="native",
+            session_scope="provider_all",
+            sample_role=SampleRole.SEEN,
+        )
+        opener = _ProviderDateOpener(_provider_date_rows())
+
+        result = run_toss_minute_shard(
+            scope,
+            environment={
+                "TOSS_CLIENT_ID": "identifier",
+                "TOSS_CLIENT_SECRET": "private-value",
+            },
+            opener=opener,
+            clock=lambda: datetime(2026, 7, 11, tzinfo=timezone.utc),
+            request_pacer=lambda: None,
+        )
+
+        self.assertEqual(len(result.analysis_rows), 1_339)
+        self.assertEqual(result.analysis_rows[0].normalized_instant, "2026-07-09T00:01:00Z")
+        self.assertEqual(result.analysis_rows[-1].normalized_instant, "2026-07-09T23:59:00Z")
+        self.assertEqual(len(result.captures), 7)
+        self.assertTrue(all(len(page[0]) <= 200 for page in opener.pages_by_before.values()))
+        candle_url = getattr(opener.requests[1], "full_url")
+        self.assertEqual(
+            parse_qs(urlsplit(candle_url).query)["before"],
+            ["2026-07-09T23:59:00Z"],
+        )
+        self.assertNotEqual(
+            scope.acquisition_key,
+            replace(scope, feed="provider_all").acquisition_key,
+        )
+
+    def test_provider_date_daily_scope_rejects_non_daily_or_off_grid_windows(self) -> None:
+        valid = CollectionScope(
+            provider="toss",
+            feed="provider_date_daily_v2",
+            instrument_id="stable-aapl-id",
+            symbol="AAPL",
+            interval="1m",
+            start_at=datetime(2026, 7, 9, tzinfo=timezone.utc),
+            end_at=datetime(2026, 7, 10, tzinfo=timezone.utc),
+            adjustment_mode="native",
+            session_scope="provider_all",
+            sample_role=SampleRole.SEEN,
+        )
+        invalid_scopes = (
+            replace(valid, end_at=datetime(2026, 7, 10, 0, 1, tzinfo=timezone.utc)),
+            replace(
+                valid,
+                start_at=datetime(2026, 7, 9, 23, 0, tzinfo=timezone.utc),
+                end_at=datetime(2026, 7, 10, 0, 30, tzinfo=timezone.utc),
+            ),
+            replace(
+                valid,
+                start_at=datetime(2026, 7, 9, 0, 0, 1, tzinfo=timezone.utc),
+            ),
+        )
+        opener = _QueueOpener(())
+
+        for invalid in invalid_scopes:
+            with self.subTest(scope=invalid):
+                with self.assertRaisesRegex(IntradayRunError, "scope_not_allowed"):
+                    run_toss_minute_shard(
+                        invalid,
+                        environment={
+                            "TOSS_CLIENT_ID": "identifier",
+                            "TOSS_CLIENT_SECRET": "private-value",
+                        },
+                        opener=opener,
+                        clock=lambda: datetime(2026, 7, 11, tzinfo=timezone.utc),
+                        request_pacer=lambda: None,
+                    )
+
+        self.assertEqual(opener.requests, [])
+
     def test_secure_file_is_consumed_into_one_shot_environment(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "toss-credentials.local.json"

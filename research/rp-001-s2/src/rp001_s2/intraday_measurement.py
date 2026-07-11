@@ -25,6 +25,7 @@ from rp001.toss_research_collector import (
 
 
 _CANDLES_URL = "https://openapi.tossinvest.com/api/v1/candles"
+_MAX_MINUTE_ROWS_PER_RESPONSE = 200
 _UNSIGNED_DECIMAL_PATTERN = re.compile(r"^[0-9]+(?:\.[0-9]+)?$")
 _CANDLE_FIELDS = frozenset(
     {"timestamp", "openPrice", "highPrice", "lowPrice", "closePrice", "volume", "currency"}
@@ -119,7 +120,7 @@ class IntradayMeasurementCollector:
             or type(page_limit) is not int
             or not 1 <= page_limit <= 64
             or start >= end
-            or before_instant < end
+            or not start <= before_instant <= end
         ):
             raise MeasurementError("INVALID_INPUT")
 
@@ -256,7 +257,7 @@ def _parse_candle_page(
         or "candles" not in result
         or not frozenset(result).issubset({"candles", "nextBefore"})
         or not isinstance(result["candles"], list)
-        or len(result["candles"]) > 200
+        or len(result["candles"]) > _MAX_MINUTE_ROWS_PER_RESPONSE
     ):
         raise MeasurementError("INVALID_CANDLE_SHAPE", (capture,))
     rows: list[MeasuredBar] = []

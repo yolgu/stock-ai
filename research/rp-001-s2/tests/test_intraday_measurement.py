@@ -57,6 +57,39 @@ def _candle_page(
 
 
 class IntradayPaginationContractTest(unittest.TestCase):
+    def test_initial_before_inside_scope_keeps_analysis_end_at_scope_end(self) -> None:
+        transport = _QueueTransport(
+            (
+                _candle_page(
+                    [
+                        _candle("2026-07-09T23:59:00Z"),
+                        _candle("2026-07-09T00:01:00Z"),
+                    ],
+                    None,
+                ),
+            )
+        )
+        collector = IntradayMeasurementCollector(
+            transport=transport,
+            token_supplier=lambda: "ephemeral",
+            clock=lambda: datetime(2026, 7, 11, tzinfo=timezone.utc),
+        )
+
+        result = collector.collect_candles(
+            symbol="AAPL",
+            interval="1m",
+            adjusted=False,
+            start_at="2026-07-09T00:00:00Z",
+            end_at="2026-07-10T00:00:00Z",
+            initial_before="2026-07-09T23:59:00Z",
+            count=200,
+            page_limit=4,
+        )
+
+        self.assertEqual(len(result.analysis_rows), 2)
+        self.assertEqual(result.analysis_rows[-1].bar_end, "2026-07-10T00:00:00Z")
+        self.assertIn("before=2026-07-09T23%3A59%3A00Z", transport.requests[0].url)
+
     def test_distinct_minutes_in_one_session_are_preserved_with_raw_lineage(self) -> None:
         first = _candle_page(
             [
@@ -186,7 +219,7 @@ class IntradayPaginationContractTest(unittest.TestCase):
             adjusted=False,
             start_at="2026-07-10T09:00:00+09:00",
             end_at="2026-07-11T07:00:00+09:00",
-            initial_before="2026-07-11T08:00:00+09:00",
+            initial_before="2026-07-11T07:00:00+09:00",
             count=200,
             page_limit=4,
         )

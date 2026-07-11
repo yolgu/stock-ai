@@ -13,7 +13,11 @@ from typing import NoReturn
 from urllib.request import build_opener
 
 from rp001.toss_research_collector import RawHttpCapture
-from rp001_s2.archive_contract import CollectionScope
+from rp001_s2.archive_contract import (
+    TOSS_PROVIDER_DATE_DAILY_FEED,
+    CollectionScope,
+    is_supported_toss_minute_scope,
+)
 from rp001_s2.intraday_boundary import StrictMinuteCandleTransport
 from rp001_s2.intraday_measurement import (
     IntradayCandleCollection,
@@ -118,7 +122,7 @@ def run_toss_minute_shard(
     token = ""
     try:
         token = _authenticate(effective_opener, credentials, clock)
-        initial_before = _format_utc(scope.end_at)
+        initial_before = _format_utc(_initial_before(scope))
         transport = StrictMinuteCandleTransport(
             opener=effective_opener,
             allowed_symbols=(scope.symbol,),
@@ -149,16 +153,15 @@ def run_toss_minute_shard(
 
 def validate_toss_minute_scope(scope: CollectionScope) -> bool:
     """Validate the Toss minute identity before credentials or network access."""
-    if (
-        not isinstance(scope, CollectionScope)
-        or scope.provider != "toss"
-        or scope.feed != "provider_all"
-        or scope.interval != "1m"
-        or scope.session_scope != "provider_all"
-        or scope.adjustment_mode not in {"native", "adjusted"}
-    ):
+    if not is_supported_toss_minute_scope(scope):
         raise IntradayRunError("scope_not_allowed")
     return scope.adjustment_mode == "adjusted"
+
+
+def _initial_before(scope: CollectionScope) -> datetime:
+    if scope.feed == TOSS_PROVIDER_DATE_DAILY_FEED:
+        return scope.end_at - timedelta(minutes=1)
+    return scope.end_at
 
 
 def _read_bounded(descriptor: int) -> bytes:

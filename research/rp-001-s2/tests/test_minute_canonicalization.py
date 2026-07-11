@@ -170,6 +170,23 @@ def _alpaca_collection() -> AlpacaMinuteCollection:
 
 
 class MinuteCanonicalizationTest(unittest.TestCase):
+    def test_toss_provider_date_feed_is_preserved_as_distinct_identity(self) -> None:
+        legacy_scope, collection = _toss_collection()
+        provider_date_scope = replace(
+            legacy_scope,
+            feed="provider_date_daily_v2",
+        )
+
+        bars = canonicalize_toss_collection(provider_date_scope, collection)
+
+        self.assertTrue(
+            all(bar.feed == "provider_date_daily_v2" for bar in bars)
+        )
+        self.assertNotEqual(
+            provider_date_scope.acquisition_key,
+            legacy_scope.acquisition_key,
+        )
+
     def test_toss_preserves_analysis_and_distinct_audit_quality_rows(self) -> None:
         scope, collection = _toss_collection()
 
