@@ -30,7 +30,7 @@ _OTHER = (
     "TSLA|Tesla, Inc. - Common Stock|N|TSLA|N|100|N|TSLA\r\n"
     "SPY|SPDR S&P 500 ETF Trust|P|SPY|Y|100|N|SPY\r\n"
     "PREFP|Example Corp. Preferred Stock|N|PREFP|N|100|N|PREFP\r\n"
-    "File Creation Time: 0711202621:00|||||||\r\n"
+    "File Creation Time: 0711202621:00||||||\r\n"
 ).encode("utf-8")
 
 
@@ -101,6 +101,39 @@ class UsInstrumentDirectoryTest(unittest.TestCase):
             with self.subTest(nasdaq_sha=hashlib.sha256(nasdaq).hexdigest()):
                 with self.assertRaisesRegex(ValueError, "instrument_directory_invalid"):
                     parse_us_instrument_directory(nasdaq, other)
+
+    def test_preserves_official_security_name_spacing(self) -> None:
+        source = _NASDAQ.replace(
+            b"Apple Inc. - Common Stock|",
+            b"Apple Inc. - Common Stock |",
+        )
+
+        directory = parse_us_instrument_directory(source, _OTHER)
+
+        aapl = next(record for record in directory.records if record.symbol == "AAPL")
+        self.assertEqual(aapl.security_name, "Apple Inc. - Common Stock ")
+        self.assertEqual(aapl.eligibility, InstrumentEligibility.COMMON_STOCK)
+
+    def test_non_common_terms_use_word_boundaries(self) -> None:
+        source = _NASDAQ.replace(
+            b"AAPL|Apple Inc. - Common Stock|",
+            b"CWBC|Community West Bancshares - Common Stock|",
+        ).replace(
+            b"WARRW|Example Corp. - Warrant|",
+            b"WARRW|Example Corp. - Warrant Unit|",
+        )
+
+        directory = parse_us_instrument_directory(source, _OTHER)
+        by_symbol = {record.symbol: record for record in directory.records}
+
+        self.assertEqual(
+            by_symbol["CWBC"].eligibility,
+            InstrumentEligibility.COMMON_STOCK,
+        )
+        self.assertEqual(
+            by_symbol["WARRW"].eligibility,
+            InstrumentEligibility.EXCLUDED_NON_COMMON,
+        )
 
     def test_live_collection_preserves_exact_raw_body_hash_and_received_time(self) -> None:
         opener = _Opener((_Response(_NASDAQ), _Response(_OTHER)))

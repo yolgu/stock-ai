@@ -51,16 +51,10 @@ _COMMON_EQUITY_MARKERS = (
     "common shares",
     "ordinary share",
 )
-_NON_COMMON_MARKERS = (
-    "warrant",
-    "right",
-    "unit",
-    "preferred",
-    "depositary share",
-    "depository share",
-    "note",
-    "bond",
-    "debenture",
+_NON_COMMON_PATTERN = re.compile(
+    r"\b(?:warrants?|rights?|units?|preferred|depositary shares?|"
+    r"depository shares?|notes?|bonds?|debentures?)\b",
+    re.IGNORECASE,
 )
 _SYMBOL_PATTERN = re.compile(r"^[A-Z][A-Z0-9.-]{0,13}$")
 
@@ -159,8 +153,16 @@ def parse_us_instrument_directory(
     other_body: bytes,
 ) -> UsInstrumentDirectory:
     """Parse every official row, then derive a direction-agnostic collection set."""
-    nasdaq_rows, nasdaq_created = _rows(nasdaq_body, _NASDAQ_HEADER)
-    other_rows, other_created = _rows(other_body, _OTHER_HEADER)
+    nasdaq_rows, nasdaq_created = _rows(
+        nasdaq_body,
+        _NASDAQ_HEADER,
+        footer_field_count=8,
+    )
+    other_rows, other_created = _rows(
+        other_body,
+        _OTHER_HEADER,
+        footer_field_count=7,
+    )
     records = tuple(_nasdaq_record(row) for row in nasdaq_rows) + tuple(
         _other_record(row) for row in other_rows
     )
@@ -185,6 +187,8 @@ def parse_us_instrument_directory(
 def _rows(
     body: bytes,
     expected_header: tuple[str, ...],
+    *,
+    footer_field_count: int,
 ) -> tuple[tuple[tuple[str, ...], ...], str]:
     try:
         text = body.decode("utf-8")
@@ -196,7 +200,7 @@ def _rows(
     footer = tuple(lines[-1].split("|"))
     prefix = "File Creation Time: "
     if (
-        len(footer) != len(expected_header)
+        len(footer) != footer_field_count
         or not footer[0].startswith(prefix)
         or not footer[0][len(prefix) :]
         or any(footer[1:])
@@ -292,7 +296,7 @@ def _eligibility(
     if is_etf:
         return InstrumentEligibility.ETF
     normalized = security_name.casefold()
-    if any(marker in normalized for marker in _NON_COMMON_MARKERS):
+    if _NON_COMMON_PATTERN.search(normalized) is not None:
         return InstrumentEligibility.EXCLUDED_NON_COMMON
     if any(marker in normalized for marker in _COMMON_EQUITY_MARKERS):
         return InstrumentEligibility.COMMON_STOCK
@@ -357,8 +361,7 @@ def _capture(
 def _safe_text(value: object) -> bool:
     return (
         isinstance(value, str)
-        and bool(value)
-        and value == value.strip()
+        and bool(value.strip())
         and not any(unicodedata.category(character) in {"Cc", "Cf"} for character in value)
     )
 
