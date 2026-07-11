@@ -51,6 +51,16 @@ class PassageLabel(str, Enum):
     SIGMA_NOT_ESTIMABLE = "sigma_not_estimable"
 
 
+class CompetitivePathLabel(str, Enum):
+    UPSIDE_ACCELERATION = "upside_acceleration"
+    DOWNSIDE_ACCELERATION = "downside_acceleration"
+    UP_THEN_DOWN_REVERSAL = "up_then_down_reversal"
+    DOWN_THEN_UP_REVERSAL = "down_then_up_reversal"
+    VOLATILE_PERSISTENCE = "volatile_persistence"
+    NORMALIZATION = "normalization"
+    CENSORED_OR_NOT_IDENTIFIABLE = "censored_or_not_identifiable"
+
+
 @dataclass(frozen=True)
 class DirectionNeutralObservation:
     symbol: str
@@ -176,6 +186,19 @@ class FirstPassageResult:
     lower_barrier: float | None
     upper_barrier: float | None
     passage_market_minute_ordinal: int | None
+    horizon_end_market_minute_ordinal: int | None
+
+
+@dataclass(frozen=True)
+class CompetitivePathResult:
+    horizon: LabelHorizon
+    label: CompetitivePathLabel
+    reason: str | None
+    sigma: float | None
+    lower_barrier: float | None
+    upper_barrier: float | None
+    first_passage_market_minute_ordinal: int | None
+    second_passage_market_minute_ordinal: int | None
     horizon_end_market_minute_ordinal: int | None
 
 
@@ -398,6 +421,145 @@ def label_first_passage(
     )
 
 
+def label_competitive_path(
+    anchor: DirectionNeutralObservation,
+    observations: Sequence[DirectionNeutralObservation],
+    episode: OverheatEpisode,
+    horizon: LabelHorizon,
+) -> CompetitivePathResult:
+    """Assign direction only after a direction-neutral overheat anchor exists."""
+    if not isinstance(anchor, DirectionNeutralObservation):
+        raise ValueError("competitive_path_anchor_invalid")
+    if not isinstance(episode, OverheatEpisode) or episode.anchor != anchor:
+        raise ValueError("competitive_path_episode_invalid")
+    if not isinstance(horizon, LabelHorizon):
+        raise ValueError("competitive_path_horizon_invalid")
+    values = tuple(observations)
+    if any(not isinstance(value, DirectionNeutralObservation) for value in values):
+        raise ValueError("competitive_path_observation_invalid")
+    if (
+        episode.closed_at_market_minute_ordinal is not None
+        and episode.closed_at_market_minute_ordinal
+        < anchor.market_minute_ordinal
+    ):
+        raise ValueError("competitive_path_episode_invalid")
+    if not episode.coverage_complete:
+        return _unidentified_competitive_path(
+            horizon,
+            "episode_coverage_incomplete",
+        )
+
+    same_symbol = tuple(value for value in values if value.symbol == anchor.symbol)
+    sigma = _ex_ante_sigma(anchor, same_symbol, horizon)
+    if sigma is None:
+        return _unidentified_competitive_path(
+            horizon,
+            "sigma_not_estimable",
+        )
+    lower_barrier = anchor.log_close - _BARRIER_SIGMA_MULTIPLE * sigma
+    upper_barrier = anchor.log_close + _BARRIER_SIGMA_MULTIPLE * sigma
+    horizon_end = _horizon_end_ordinal(anchor, same_symbol, horizon)
+    if horizon_end is None:
+        return _unidentified_competitive_path(
+            horizon,
+            "horizon_endpoint_unavailable",
+            sigma=sigma,
+            lower_barrier=lower_barrier,
+            upper_barrier=upper_barrier,
+        )
+
+    future_by_ordinal = _future_by_ordinal(anchor, same_symbol, horizon_end)
+    first_passage: PassageLabel | None = None
+    first_ordinal: int | None = None
+    for ordinal in range(anchor.market_minute_ordinal + 1, horizon_end + 1):
+        future = future_by_ordinal.get(ordinal)
+        if future is None:
+            return _unidentified_competitive_path(
+                horizon,
+                "future_market_minute_missing_or_not_yet_available",
+                sigma=sigma,
+                lower_barrier=lower_barrier,
+                upper_barrier=upper_barrier,
+                horizon_end=horizon_end,
+            )
+        passage = _barrier_passage(future, lower_barrier, upper_barrier)
+        if passage is None:
+            continue
+        if passage is PassageLabel.BOTH_SAME_MINUTE and first_passage is None:
+            return _unidentified_competitive_path(
+                horizon,
+                "intraminute_passage_order_not_identifiable",
+                sigma=sigma,
+                lower_barrier=lower_barrier,
+                upper_barrier=upper_barrier,
+                horizon_end=horizon_end,
+            )
+        if first_passage is None:
+            first_passage = passage
+            first_ordinal = ordinal
+            continue
+        crossed_opposite = (
+            first_passage is PassageLabel.UP_FIRST
+            and passage in (PassageLabel.DOWN_FIRST, PassageLabel.BOTH_SAME_MINUTE)
+        ) or (
+            first_passage is PassageLabel.DOWN_FIRST
+            and passage in (PassageLabel.UP_FIRST, PassageLabel.BOTH_SAME_MINUTE)
+        )
+        if crossed_opposite:
+            reversal = (
+                CompetitivePathLabel.UP_THEN_DOWN_REVERSAL
+                if first_passage is PassageLabel.UP_FIRST
+                else CompetitivePathLabel.DOWN_THEN_UP_REVERSAL
+            )
+            return CompetitivePathResult(
+                horizon=horizon,
+                label=reversal,
+                reason=None,
+                sigma=sigma,
+                lower_barrier=lower_barrier,
+                upper_barrier=upper_barrier,
+                first_passage_market_minute_ordinal=first_ordinal,
+                second_passage_market_minute_ordinal=ordinal,
+                horizon_end_market_minute_ordinal=horizon_end,
+            )
+
+    if first_passage is not None:
+        acceleration = (
+            CompetitivePathLabel.UPSIDE_ACCELERATION
+            if first_passage is PassageLabel.UP_FIRST
+            else CompetitivePathLabel.DOWNSIDE_ACCELERATION
+        )
+        return CompetitivePathResult(
+            horizon=horizon,
+            label=acceleration,
+            reason=None,
+            sigma=sigma,
+            lower_barrier=lower_barrier,
+            upper_barrier=upper_barrier,
+            first_passage_market_minute_ordinal=first_ordinal,
+            second_passage_market_minute_ordinal=None,
+            horizon_end_market_minute_ordinal=horizon_end,
+        )
+
+    closed_at = episode.closed_at_market_minute_ordinal
+    no_passage_label = (
+        CompetitivePathLabel.NORMALIZATION
+        if closed_at is not None and closed_at <= horizon_end
+        else CompetitivePathLabel.VOLATILE_PERSISTENCE
+    )
+    return CompetitivePathResult(
+        horizon=horizon,
+        label=no_passage_label,
+        reason=None,
+        sigma=sigma,
+        lower_barrier=lower_barrier,
+        upper_barrier=upper_barrier,
+        first_passage_market_minute_ordinal=None,
+        second_passage_market_minute_ordinal=None,
+        horizon_end_market_minute_ordinal=horizon_end,
+    )
+
+
 def _comparable_history(
     target: DirectionNeutralObservation,
     observations: tuple[DirectionNeutralObservation, ...],
@@ -555,6 +717,28 @@ def _passage_result(
         lower_barrier=lower_barrier,
         upper_barrier=upper_barrier,
         passage_market_minute_ordinal=passage_ordinal,
+        horizon_end_market_minute_ordinal=horizon_end,
+    )
+
+
+def _unidentified_competitive_path(
+    horizon: LabelHorizon,
+    reason: str,
+    *,
+    sigma: float | None = None,
+    lower_barrier: float | None = None,
+    upper_barrier: float | None = None,
+    horizon_end: int | None = None,
+) -> CompetitivePathResult:
+    return CompetitivePathResult(
+        horizon=horizon,
+        label=CompetitivePathLabel.CENSORED_OR_NOT_IDENTIFIABLE,
+        reason=reason,
+        sigma=sigma,
+        lower_barrier=lower_barrier,
+        upper_barrier=upper_barrier,
+        first_passage_market_minute_ordinal=None,
+        second_passage_market_minute_ordinal=None,
         horizon_end_market_minute_ordinal=horizon_end,
     )
 
