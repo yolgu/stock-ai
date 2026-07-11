@@ -1,0 +1,111 @@
+from __future__ import annotations
+
+import unittest
+from datetime import datetime, timedelta, timezone
+
+from rp001_s2.archive_contract import SampleRole
+from rp001_s2.minute_scope_plan import build_toss_minute_scope_plan
+
+
+class TossMinuteScopePlanTest(unittest.TestCase):
+    def test_frozen_range_is_exhaustively_sharded_for_every_symbol_and_mode(self) -> None:
+        start = datetime(2026, 6, 1, tzinfo=timezone.utc)
+        end = datetime(2026, 6, 20, tzinfo=timezone.utc)
+
+        plan = build_toss_minute_scope_plan(
+            instruments=(("US-AAPL", "AAPL"), ("US-SPY", "SPY")),
+            start_at=start,
+            end_at=end,
+            instrument_master_sha256="a" * 64,
+            sample_role=SampleRole.SEEN,
+        )
+
+        self.assertEqual(plan.instrument_count, 2)
+        self.assertEqual(plan.scope_count, 12)
+        self.assertEqual(plan.adjustment_modes, ("native", "adjusted"))
+        for instrument_id, symbol in (("US-AAPL", "AAPL"), ("US-SPY", "SPY")):
+            for mode in plan.adjustment_modes:
+                scopes = tuple(
+                    scope
+                    for scope in plan.scopes
+                    if scope.instrument_id == instrument_id
+                    and scope.symbol == symbol
+                    and scope.adjustment_mode == mode
+                )
+                chronological = tuple(
+                    sorted(scopes, key=lambda scope: scope.start_at)
+                )
+                self.assertEqual(chronological[0].start_at, start)
+                self.assertEqual(chronological[-1].end_at, end)
+                self.assertTrue(
+                    all(
+                        left.end_at == right.start_at
+                        for left, right in zip(
+                            chronological,
+                            chronological[1:],
+                        )
+                    )
+                )
+                self.assertTrue(
+                    all(
+                        scope.end_at - scope.start_at <= timedelta(days=7)
+                        for scope in chronological
+                    )
+                )
+                self.assertEqual(
+                    tuple(scope.start_at for scope in scopes),
+                    tuple(
+                        sorted(
+                            (scope.start_at for scope in scopes),
+                            reverse=True,
+                        )
+                    ),
+                )
+
+    def test_seen_unseen_changes_no_acquisition_identity_or_collection_coverage(self) -> None:
+        arguments = {
+            "instruments": (("US-TSLA", "TSLA"),),
+            "start_at": datetime(2026, 7, 1, tzinfo=timezone.utc),
+            "end_at": datetime(2026, 7, 11, tzinfo=timezone.utc),
+            "instrument_master_sha256": "b" * 64,
+        }
+
+        seen = build_toss_minute_scope_plan(
+            **arguments,
+            sample_role=SampleRole.SEEN,
+        )
+        unseen = build_toss_minute_scope_plan(
+            **arguments,
+            sample_role=SampleRole.UNSEEN,
+        )
+
+        self.assertEqual(
+            tuple(scope.acquisition_key for scope in seen.scopes),
+            tuple(scope.acquisition_key for scope in unseen.scopes),
+        )
+        self.assertEqual(seen.collection_identity_sha256, unseen.collection_identity_sha256)
+        self.assertNotEqual(seen.presentation_sha256, unseen.presentation_sha256)
+
+    def test_invalid_master_identity_or_duplicate_instrument_is_rejected(self) -> None:
+        start = datetime(2026, 7, 1, tzinfo=timezone.utc)
+        end = datetime(2026, 7, 2, tzinfo=timezone.utc)
+        cases = (
+            ((("A", "AAPL"), ("A", "MSFT")), "a" * 64),
+            ((("A", "AAPL"), ("B", "AAPL")), "a" * 64),
+            ((("A", "AAPL"),), "invalid"),
+        )
+
+        for instruments, digest in cases:
+            with self.subTest(instruments=instruments, digest=digest):
+                with self.assertRaises(ValueError):
+                    build_toss_minute_scope_plan(
+                        instruments=instruments,
+                        start_at=start,
+                        end_at=end,
+                        instrument_master_sha256=digest,
+                        sample_role=SampleRole.SEEN,
+                    )
+
+
+if __name__ == "__main__":
+    unittest.main()
