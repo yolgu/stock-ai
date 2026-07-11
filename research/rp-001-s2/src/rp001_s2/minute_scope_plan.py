@@ -8,7 +8,12 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from enum import Enum
 
-from rp001_s2.archive_contract import CollectionScope, SampleRole
+from rp001_s2.archive_contract import (
+    TOSS_LEGACY_MINUTE_FEED,
+    TOSS_PROVIDER_DATE_DAILY_FEED,
+    CollectionScope,
+    SampleRole,
+)
 
 
 _IDENTITY_DOMAIN = "rp001_s2.toss_minute_scope_plan"
@@ -30,9 +35,9 @@ class TossMinutePlanVersion(str, Enum):
     @property
     def feed(self) -> str:
         return (
-            "provider_all"
+            TOSS_LEGACY_MINUTE_FEED
             if self is TossMinutePlanVersion.LEGACY_SEVEN_DAY_V1
-            else "provider_date_daily_v2"
+            else TOSS_PROVIDER_DATE_DAILY_FEED
         )
 
     @property
