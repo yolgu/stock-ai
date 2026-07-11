@@ -1,0 +1,17 @@
+{
+  "schemaVersion": "research-object.v1",
+  "id": "RQ-003",
+  "type": "ResearchQuestion",
+  "title": "직접 행동측정의 5거래일 사건 예측 증분",
+  "version": "1.0.0",
+  "lifecycleState": "proposed",
+  "evidenceLevel": "conceptual",
+  "purpose": "시점 t의 직접 행동 측정치가 가격 전용 기준선보다 사전 정의된 향후 5거래일 onset event의 외부표본 확률예측을 개선하는지 식별한다.",
+  "dependsOn": [
+    "RP-001"
+  ],
+  "artifacts": [
+    "research/meta-research/objects/research-questions/RQ-003-behavior-regime/question.md"
+  ]
+}
+

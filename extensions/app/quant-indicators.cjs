@@ -162,8 +162,10 @@ function createQuantIndicatorSnapshot(input) {
     currentPrice: price,
     vwap: indicators.vwap,
     atrStop: indicators.atrStop,
+    spread: indicators.spread,
     trades: observations.trades,
-    orderbook: observations.orderbook
+    orderbook: observations.orderbook,
+    intradayCandles: observations.intradayCandles
   });
   indicators.marketSentimentScore = calculateMarketSentimentScore(indicators);
   indicators.intradayTradeScore = calculateIntradayTradeScore(
@@ -456,59 +458,18 @@ function calculateProfitTakingPressure(input) {
   const sellFlowPressure = hasTradeFlow ? calculateSellFlowPressure(input.trades) : 0;
   const askBookPressure = hasOrderbookPressure ? calculateAskBookPressure(input.orderbook) : 0;
   const volumeExpansion = input.volumeProfile.volumeExpansion;
-  const score = hasTradeFlow && hasOrderbookPressure
-    ? Math.round(
-        100 * (
-          0.3 * profitLongRatio +
-          0.25 * vwapAtrExtension +
-          0.2 * sellFlowPressure +
-          0.15 * askBookPressure +
-          0.1 * volumeExpansion
-        )
-      )
-    : Math.round(100 * profitLongRatio * vwapAtrExtension);
-
-  if (score >= 60) {
-    return availableProfitTakingPressure(
-      profitLongRatio,
-      weightedProfitPressure,
-      vwapAtrExtension,
-      sellFlowPressure,
-      askBookPressure,
-      volumeExpansion,
-      score,
-      "차익실현 압박 강함",
-      "danger"
-    );
-  }
-
-  if (score >= 40) {
-    return availableProfitTakingPressure(
-      profitLongRatio,
-      weightedProfitPressure,
-      vwapAtrExtension,
-      sellFlowPressure,
-      askBookPressure,
-      volumeExpansion,
-      score,
-      "차익실현 압박 경계",
-      "warning"
-    );
-  }
-
-  if (score >= 20) {
-    return availableProfitTakingPressure(
-      profitLongRatio,
-      weightedProfitPressure,
-      vwapAtrExtension,
-      sellFlowPressure,
-      askBookPressure,
-      volumeExpansion,
-      score,
-      "차익실현 압박 보통",
-      "neutral"
-    );
-  }
+  const causes = {
+    profitBurden: calculateProfitBurdenCause(input.volumeProfile, atr, vwapAtrExtension),
+    realizedSellPressure: calculateRealizedSellPressureCause(input.trades, input.orderbook),
+    overheadSupplyPressure: calculateOverheadSupplyPressureCause(input.volumeProfile, atr),
+    liquidityImpactRisk: calculateLiquidityImpactRiskCause(
+      input.orderbook,
+      input.intradayCandles,
+      input.spread
+    )
+  };
+  const score = calculateProfitTakingRiskScore(causes);
+  const level = classifyRiskScore(score);
 
   return availableProfitTakingPressure(
     profitLongRatio,
@@ -518,9 +479,118 @@ function calculateProfitTakingPressure(input) {
     askBookPressure,
     volumeExpansion,
     score,
-    "차익실현 압박 낮음",
-    "positive"
+    `차익실현 리스크 ${level.labelSuffix}`,
+    level.severity,
+    causes
   );
+}
+
+function calculateProfitBurdenCause(volumeProfile, atr, vwapAtrExtension) {
+  const profitGainMass = clip(volumeProfile.profitGainPriceDistance / atr, 0, 1);
+  const score = Math.round(
+    100 * (
+      0.45 * volumeProfile.profitLongRatio +
+      0.35 * profitGainMass +
+      0.20 * vwapAtrExtension
+    )
+  );
+
+  return availableProfitTakingCause(
+    score,
+    "수익권 부담",
+    "수익권 물량과 VWAP/ATR 이격이 함께 큽니다."
+  );
+}
+
+function calculateRealizedSellPressureCause(trades, orderbook) {
+  const tradeFlow = calculateDirectionalTradeFlow(trades);
+  const hasTradeFlow = tradeFlow.totalVolume > 0;
+  const hasOrderbookPressure = hasOrderbookDepth(orderbook);
+
+  if (!hasTradeFlow && !hasOrderbookPressure) {
+    return unavailableProfitTakingCause(
+      "실제 매도 압력",
+      "recent trades or orderbook depth are required"
+    );
+  }
+
+  const components = [
+    { value: hasTradeFlow ? tradeFlow.sellFlowPressure : null, weight: 0.45 },
+    { value: hasTradeFlow ? tradeFlow.aggressiveSellRatio : null, weight: 0.30 },
+    { value: hasOrderbookPressure ? calculateAskBookPressure(orderbook) : null, weight: 0.25 }
+  ];
+  const score = calculateWeightedComponentScore(components);
+
+  return availableProfitTakingCause(
+    score,
+    "실제 매도 압력",
+    "최근 체결 방향과 호가 잔량으로 추정합니다.",
+    "estimated"
+  );
+}
+
+function calculateOverheadSupplyPressureCause(volumeProfile, atr) {
+  const overheadLossMass = clip(volumeProfile.overheadLossPriceDistance / atr, 0, 1);
+  const score = Math.round(
+    100 * (
+      0.60 * volumeProfile.overheadRatio +
+      0.40 * overheadLossMass
+    )
+  );
+
+  return availableProfitTakingCause(
+    score,
+    "위쪽 매물 부담",
+    "현재가 위 거래량 부담을 ATR 기준으로 봅니다."
+  );
+}
+
+function calculateLiquidityImpactRiskCause(orderbook, candlePage, spread) {
+  const components = [
+    { value: calculateSpreadRiskComponent(spread), weight: 0.45 },
+    { value: calculateDepthThinness(orderbook, candlePage), weight: 0.35 },
+    { value: calculatePriceImpactRisk(candlePage), weight: 0.20 }
+  ];
+  const hasAnyComponent = components.some((component) => component.value !== null);
+
+  if (!hasAnyComponent) {
+    return unavailableProfitTakingCause(
+      "체결 환경 위험",
+      "spread, orderbook depth, or intraday candles are required"
+    );
+  }
+
+  const hasAllComponents = components.every((component) => component.value !== null);
+  const score = calculateWeightedComponentScore(components);
+
+  return availableProfitTakingCause(
+    score,
+    "체결 환경 위험",
+    "스프레드, 호가 깊이, 최근 가격충격으로 추정합니다.",
+    hasAllComponents ? "available" : "estimated"
+  );
+}
+
+function calculateProfitTakingRiskScore(causes) {
+  const baseScore = Math.round(
+    0.35 * readCauseScore(causes.profitBurden) +
+    0.30 * readCauseScore(causes.realizedSellPressure) +
+    0.25 * readCauseScore(causes.overheadSupplyPressure) +
+    0.10 * readCauseScore(causes.liquidityImpactRisk)
+  );
+  const confirmedSellingScore = (
+    readCauseScore(causes.realizedSellPressure) >= 70 &&
+    readCauseScore(causes.profitBurden) >= 55
+  )
+    ? Math.max(baseScore, 75)
+    : baseScore;
+  const highSingleCauseScore = Object.values(causes).some((cause) =>
+    typeof cause.score === "number" && cause.score >= 85
+  )
+    ? Math.max(confirmedSellingScore, 65)
+    : confirmedSellingScore;
+
+  return clip(highSingleCauseScore, 0, 100);
 }
 
 function createVolumeProfile(candlePage, currentPrice) {
@@ -566,6 +636,12 @@ function createVolumeProfile(candlePage, currentPrice) {
   const weightedProfitSum = sum(
     bins.map((bin) => bin.volume * Math.max((currentPrice - bin.price) / bin.price, 0))
   );
+  const profitGainDistanceSum = sum(
+    bins.map((bin) => bin.volume * Math.max(currentPrice - bin.price, 0))
+  );
+  const overheadLossDistanceSum = sum(
+    bins.map((bin) => bin.volume * Math.max(bin.price - currentPrice, 0))
+  );
   const latestVolume = candleVolumes[candleVolumes.length - 1];
   const averageVolume = average(candleVolumes);
 
@@ -575,6 +651,8 @@ function createVolumeProfile(candlePage, currentPrice) {
     overheadRatio: roundTo(overheadVolume / totalVolume, 2),
     profitLongRatio: roundTo(profitLongVolume / totalVolume, 2),
     weightedProfitPressure: roundTo(weightedProfitSum / totalVolume, 2),
+    profitGainPriceDistance: profitGainDistanceSum / totalVolume,
+    overheadLossPriceDistance: overheadLossDistanceSum / totalVolume,
     volumeExpansion: roundTo(clip((latestVolume / averageVolume) / 2, 0, 1), 2),
     unavailableReason: null
   };
@@ -587,14 +665,26 @@ function unavailableVolumeProfile(reason) {
     overheadRatio: null,
     profitLongRatio: null,
     weightedProfitPressure: null,
+    profitGainPriceDistance: null,
+    overheadLossPriceDistance: null,
     volumeExpansion: null,
     unavailableReason: reason
   };
 }
 
 function calculateSellFlowPressure(trades) {
+  return calculateDirectionalTradeFlow(trades).sellFlowPressure;
+}
+
+function calculateDirectionalTradeFlow(trades) {
   if (!Array.isArray(trades) || trades.length < 2) {
-    return 0;
+    return {
+      buyVolume: 0,
+      sellVolume: 0,
+      totalVolume: 0,
+      sellFlowPressure: 0,
+      aggressiveSellRatio: 0
+    };
   }
 
   const orderedTrades = [...trades].sort(
@@ -622,10 +712,22 @@ function calculateSellFlowPressure(trades) {
   const totalVolume = buyVolume + sellVolume;
 
   if (totalVolume <= 0) {
-    return 0;
+    return {
+      buyVolume,
+      sellVolume,
+      totalVolume: 0,
+      sellFlowPressure: 0,
+      aggressiveSellRatio: 0
+    };
   }
 
-  return roundTo(clip((sellVolume - buyVolume) / totalVolume, 0, 1), 2);
+  return {
+    buyVolume,
+    sellVolume,
+    totalVolume,
+    sellFlowPressure: roundTo(clip((sellVolume - buyVolume) / totalVolume, 0, 1), 2),
+    aggressiveSellRatio: roundTo(sellVolume / totalVolume, 2)
+  };
 }
 
 function hasDirectionalTradeFlow(trades) {
@@ -681,6 +783,110 @@ function readOrderbookDepth(orderbook) {
     bidVolume,
     totalVolume: askVolume + bidVolume
   };
+}
+
+function calculateSpreadRiskComponent(spread) {
+  if (!spread || spread.status !== "available" || !Number.isFinite(spread.spreadBps)) {
+    return null;
+  }
+
+  return clip(spread.spreadBps / 50, 0, 1);
+}
+
+function calculateDepthThinness(orderbook, candlePage) {
+  const orderbookNotional = calculateOrderbookNotional(orderbook);
+  const averageMinuteDollarVolume = calculateAverageMinuteDollarVolume(candlePage);
+
+  if (orderbookNotional <= 0 || averageMinuteDollarVolume <= 0) {
+    return null;
+  }
+
+  return clip(1 - clip(orderbookNotional / averageMinuteDollarVolume, 0, 1), 0, 1);
+}
+
+function calculateOrderbookNotional(orderbook) {
+  const asks = orderbook && Array.isArray(orderbook.asks) ? orderbook.asks : [];
+  const bids = orderbook && Array.isArray(orderbook.bids) ? orderbook.bids : [];
+  const entries = [...asks, ...bids];
+
+  return sum(entries.map((entry) => {
+    const price = readDecimal(entry.price);
+    const volume = readDecimal(entry.volume);
+
+    return Number.isFinite(price) && Number.isFinite(volume) && price > 0 && volume > 0
+      ? price * volume
+      : 0;
+  }));
+}
+
+function calculateAverageMinuteDollarVolume(candlePage) {
+  const candles = readOrderedCandles(candlePage);
+  const recentDollarVolumes = candles.slice(-20).map((candle) => {
+    const close = readDecimal(candle.closePrice);
+    const volume = readDecimal(candle.volume);
+
+    return Number.isFinite(close) && Number.isFinite(volume) && close > 0 && volume > 0
+      ? close * volume
+      : 0;
+  }).filter((value) => value > 0);
+
+  return recentDollarVolumes.length === 0 ? 0 : average(recentDollarVolumes);
+}
+
+function calculatePriceImpactRisk(candlePage) {
+  const candles = readOrderedCandles(candlePage);
+  const impacts = [];
+
+  for (let index = 1; index < candles.length; index += 1) {
+    const previousClose = readDecimal(candles[index - 1].closePrice);
+    const close = readDecimal(candles[index].closePrice);
+    const volume = readDecimal(candles[index].volume);
+
+    if (
+      Number.isFinite(previousClose) &&
+      Number.isFinite(close) &&
+      Number.isFinite(volume) &&
+      previousClose > 0 &&
+      close > 0 &&
+      volume > 0
+    ) {
+      impacts.push(Math.abs(Math.log(close / previousClose)) / (close * volume));
+    }
+  }
+
+  if (impacts.length < 2) {
+    return null;
+  }
+
+  const latestImpact = impacts[impacts.length - 1];
+  const medianImpact = median(impacts.slice(0, -1));
+
+  if (!Number.isFinite(medianImpact) || medianImpact <= 0) {
+    return 0;
+  }
+
+  return clip((latestImpact / medianImpact) / 2, 0, 1);
+}
+
+function calculateWeightedComponentScore(components) {
+  const availableComponents = components.filter((component) =>
+    typeof component.value === "number" && Number.isFinite(component.value)
+  );
+  const totalWeight = sum(availableComponents.map((component) => component.weight));
+
+  if (totalWeight <= 0) {
+    return null;
+  }
+
+  return Math.round(
+    100 *
+    sum(availableComponents.map((component) => component.value * component.weight)) /
+    totalWeight
+  );
+}
+
+function readCauseScore(cause) {
+  return typeof cause.score === "number" && Number.isFinite(cause.score) ? cause.score : 0;
 }
 
 function calculateRiskReward(candlePage, currentPrice, atrStop) {
@@ -1226,6 +1432,69 @@ function availableSupplyPressure(pocPrice, overheadRatio, label, severity) {
   };
 }
 
+function createUnavailableProfitTakingCauses() {
+  return {
+    profitBurden: unavailableProfitTakingCause(
+      "수익권 부담",
+      "current price, intraday candles, VWAP, and ATR are required"
+    ),
+    realizedSellPressure: unavailableProfitTakingCause(
+      "실제 매도 압력",
+      "recent trades or orderbook depth are required"
+    ),
+    overheadSupplyPressure: unavailableProfitTakingCause(
+      "위쪽 매물 부담",
+      "intraday volume profile and ATR are required"
+    ),
+    liquidityImpactRisk: unavailableProfitTakingCause(
+      "체결 환경 위험",
+      "spread, orderbook depth, or intraday candles are required"
+    )
+  };
+}
+
+function unavailableProfitTakingCause(name, reason) {
+  return {
+    status: "unavailable",
+    score: null,
+    label: `${name} 계산 불가`,
+    severity: "unavailable",
+    reason
+  };
+}
+
+function availableProfitTakingCause(score, name, reason, status = "available") {
+  const level = classifyRiskScore(score);
+
+  return {
+    status,
+    score,
+    label: `${name} ${level.labelSuffix}`,
+    severity: level.severity,
+    reason
+  };
+}
+
+function classifyRiskScore(score) {
+  if (score >= 80) {
+    return { labelSuffix: "매우 높음", severity: "danger" };
+  }
+
+  if (score >= 65) {
+    return { labelSuffix: "높음", severity: "warning" };
+  }
+
+  if (score >= 45) {
+    return { labelSuffix: "경계", severity: "warning" };
+  }
+
+  if (score >= 25) {
+    return { labelSuffix: "보통", severity: "neutral" };
+  }
+
+  return { labelSuffix: "낮음", severity: "positive" };
+}
+
 function createUnavailableProfitTakingPressure() {
   return {
     status: "unavailable",
@@ -1236,7 +1505,8 @@ function createUnavailableProfitTakingPressure() {
     askBookPressure: null,
     volumeExpansion: null,
     score: null,
-    label: "차익실현 압박 계산 불가",
+    causes: createUnavailableProfitTakingCauses(),
+    label: "차익실현 리스크 계산 불가",
     severity: "unavailable",
     unavailableReason: "current price, intraday candles, VWAP, and ATR are required"
   };
@@ -1251,7 +1521,8 @@ function availableProfitTakingPressure(
   volumeExpansion,
   score,
   label,
-  severity
+  severity,
+  causes
 ) {
   return {
     status: "available",
@@ -1262,6 +1533,7 @@ function availableProfitTakingPressure(
     askBookPressure,
     volumeExpansion,
     score,
+    causes,
     label,
     severity,
     unavailableReason: null
@@ -1695,35 +1967,41 @@ function createSupplyPressureTrace(indicator) {
 }
 
 function createProfitTakingPressureTrace(indicator) {
+  const causes = indicator.causes || createUnavailableProfitTakingCauses();
+
   return {
     key: "profitTakingPressure",
-    title: "차익실현 압박 추정",
+    title: "차익실현 리스크",
     source: "당일 1분봉 거래량 분포, VWAP, ATR, 체결 방향 추정, 호가 잔량",
     originalFormula: [
-      "차익실현 압박 점수 = 100 × 가중합(수익권 물량, VWAP/ATR 이격, 매도 체결 압력, 매도호가 압력, 거래량 확장)",
-      "수익권 물량 비율 = 현재가보다 낮은 가격대 거래량 / 전체 거래량"
+      "차익실현 리스크 = 0.35×수익권 부담 + 0.30×실제 매도 압력 + 0.25×위쪽 매물 부담 + 0.10×체결 환경 위험",
+      "수익권 부담 = 수익권 물량 + ATR 조정 이익 폭 + VWAP/ATR 이격"
     ],
     substitutedFormula: indicator.status === "available"
       ? [
-          `점수 = 100 × (0.30×${indicator.profitLongRatio} + 0.25×${indicator.vwapAtrExtension} + 0.20×${indicator.sellFlowPressure} + 0.15×${indicator.askBookPressure} + 0.10×${indicator.volumeExpansion})`
+          `점수 = 0.35×${formatNullableScore(causes.profitBurden.score)} + 0.30×${formatNullableScore(causes.realizedSellPressure.score)} + 0.25×${formatNullableScore(causes.overheadSupplyPressure.score)} + 0.10×${formatNullableScore(causes.liquidityImpactRisk.score)}`
         ]
       : ["현재가, 1분봉 거래량, VWAP 또는 ATR이 부족해 대입할 수 없습니다."],
     result: indicator.status === "available"
       ? [
-          `차익실현 압박 점수 = ${indicator.score}점`,
-          `수익권 물량 비율 = ${indicator.profitLongRatio}`
+          `차익실현 리스크 = ${indicator.score}점`,
+          `수익권 부담 = ${formatNullableScore(causes.profitBurden.score)}점`,
+          `실제 매도 압력 = ${formatNullableScore(causes.realizedSellPressure.score)}점`,
+          `위쪽 매물 부담 = ${formatNullableScore(causes.overheadSupplyPressure.score)}점`,
+          `체결 환경 위험 = ${formatNullableScore(causes.liquidityImpactRisk.score)}점`
         ]
-      : ["차익실현 압박 계산 불가"],
+      : ["차익실현 리스크 계산 불가"],
     inputs: indicator.status === "available"
       ? [
           { label: "수익권 물량 비율", value: String(indicator.profitLongRatio) },
           { label: "VWAP/ATR 이격", value: String(indicator.vwapAtrExtension) },
           { label: "매도 체결 압력", value: String(indicator.sellFlowPressure) },
-          { label: "매도호가 압력", value: String(indicator.askBookPressure) }
+          { label: "매도호가 압력", value: String(indicator.askBookPressure) },
+          { label: "위쪽 매물 부담", value: formatNullableScore(causes.overheadSupplyPressure.score) }
         ]
       : [],
-    meaning: "현재가보다 낮은 가격대에 쌓인 당일 거래량과 실제 매도 압력을 함께 보는 내부 추정 지표입니다.",
-    usage: "단기 참여자 다수가 수익권이고 매도 압력이 붙는지 확인합니다.",
+    meaning: "수익권 물량, 실제 매도 압력, 위쪽 매물 부담, 체결 환경을 나눠 보는 내부 추정 지표입니다.",
+    usage: "점수 하나보다 어떤 원인이 리스크를 키우는지 확인합니다.",
     judgment: indicator.label,
     caution: "표준 공식명이 아니며 매수·매도 추천으로 해석하지 않습니다.",
     limitation: "표준 공식명이 아니라 앱 내부 추정 지표이며 실제 보유자 원가나 매도 의도를 알 수 없습니다."
@@ -1965,6 +2243,19 @@ function average(values) {
   return values.reduce((sum, value) => sum + value, 0) / values.length;
 }
 
+function median(values) {
+  if (values.length === 0) {
+    return Number.NaN;
+  }
+
+  const sortedValues = [...values].sort((left, right) => left - right);
+  const middleIndex = Math.floor(sortedValues.length / 2);
+
+  return sortedValues.length % 2 === 0
+    ? (sortedValues[middleIndex - 1] + sortedValues[middleIndex]) / 2
+    : sortedValues[middleIndex];
+}
+
 function sum(values) {
   return values.reduce((total, value) => total + value, 0);
 }
@@ -2025,6 +2316,10 @@ function formatPlainNumber(value) {
   }
 
   return String(roundTo(decimal, 4)).replace(/\.0+$/, "");
+}
+
+function formatNullableScore(value) {
+  return typeof value === "number" && Number.isFinite(value) ? String(value) : "--";
 }
 
 function formatSignedPercent(value) {

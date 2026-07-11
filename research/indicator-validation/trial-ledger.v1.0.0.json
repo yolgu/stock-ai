@@ -1,0 +1,703 @@
+{
+  "researchId": "mania-indicator-validation",
+  "version": "1.0.0",
+  "frozenAt": "2026-07-10",
+  "policy": {
+    "appendOnly": true,
+    "deleteFailedTrials": false,
+    "retainAllOutcomes": true
+  },
+  "trials": [
+    {
+      "trialId": "fomo.documented@1",
+      "candidateId": "fomo.documented",
+      "horizon": 1,
+      "status": "preregistered",
+      "outcomeFamily": "fomoContinuation",
+      "complexity": "composite",
+      "availability": "daily_available"
+    },
+    {
+      "trialId": "fomo.documented@3",
+      "candidateId": "fomo.documented",
+      "horizon": 3,
+      "status": "preregistered",
+      "outcomeFamily": "fomoContinuation",
+      "complexity": "composite",
+      "availability": "daily_available"
+    },
+    {
+      "trialId": "fomo.documented@5",
+      "candidateId": "fomo.documented",
+      "horizon": 5,
+      "status": "preregistered",
+      "outcomeFamily": "fomoContinuation",
+      "complexity": "composite",
+      "availability": "daily_available"
+    },
+    {
+      "trialId": "fomo.documented@10",
+      "candidateId": "fomo.documented",
+      "horizon": 10,
+      "status": "preregistered",
+      "outcomeFamily": "fomoContinuation",
+      "complexity": "composite",
+      "availability": "daily_available"
+    },
+    {
+      "trialId": "fomo.equal@1",
+      "candidateId": "fomo.equal",
+      "horizon": 1,
+      "status": "preregistered",
+      "outcomeFamily": "fomoContinuation",
+      "complexity": "composite",
+      "availability": "daily_available"
+    },
+    {
+      "trialId": "fomo.equal@3",
+      "candidateId": "fomo.equal",
+      "horizon": 3,
+      "status": "preregistered",
+      "outcomeFamily": "fomoContinuation",
+      "complexity": "composite",
+      "availability": "daily_available"
+    },
+    {
+      "trialId": "fomo.equal@5",
+      "candidateId": "fomo.equal",
+      "horizon": 5,
+      "status": "preregistered",
+      "outcomeFamily": "fomoContinuation",
+      "complexity": "composite",
+      "availability": "daily_available"
+    },
+    {
+      "trialId": "fomo.equal@10",
+      "candidateId": "fomo.equal",
+      "horizon": 10,
+      "status": "preregistered",
+      "outcomeFamily": "fomoContinuation",
+      "complexity": "composite",
+      "availability": "daily_available"
+    },
+    {
+      "trialId": "fomo.deduplicated@1",
+      "candidateId": "fomo.deduplicated",
+      "horizon": 1,
+      "status": "preregistered",
+      "outcomeFamily": "fomoContinuation",
+      "complexity": "composite",
+      "availability": "daily_available"
+    },
+    {
+      "trialId": "fomo.deduplicated@3",
+      "candidateId": "fomo.deduplicated",
+      "horizon": 3,
+      "status": "preregistered",
+      "outcomeFamily": "fomoContinuation",
+      "complexity": "composite",
+      "availability": "daily_available"
+    },
+    {
+      "trialId": "fomo.deduplicated@5",
+      "candidateId": "fomo.deduplicated",
+      "horizon": 5,
+      "status": "preregistered",
+      "outcomeFamily": "fomoContinuation",
+      "complexity": "composite",
+      "availability": "daily_available"
+    },
+    {
+      "trialId": "fomo.deduplicated@10",
+      "candidateId": "fomo.deduplicated",
+      "horizon": 10,
+      "status": "preregistered",
+      "outcomeFamily": "fomoContinuation",
+      "complexity": "composite",
+      "availability": "daily_available"
+    },
+    {
+      "trialId": "fomo.baseline.momentum5@1",
+      "candidateId": "fomo.baseline.momentum5",
+      "horizon": 1,
+      "status": "preregistered",
+      "outcomeFamily": "fomoContinuation",
+      "complexity": "baseline",
+      "availability": "daily_available"
+    },
+    {
+      "trialId": "fomo.baseline.momentum5@3",
+      "candidateId": "fomo.baseline.momentum5",
+      "horizon": 3,
+      "status": "preregistered",
+      "outcomeFamily": "fomoContinuation",
+      "complexity": "baseline",
+      "availability": "daily_available"
+    },
+    {
+      "trialId": "fomo.baseline.momentum5@5",
+      "candidateId": "fomo.baseline.momentum5",
+      "horizon": 5,
+      "status": "preregistered",
+      "outcomeFamily": "fomoContinuation",
+      "complexity": "baseline",
+      "availability": "daily_available"
+    },
+    {
+      "trialId": "fomo.baseline.momentum5@10",
+      "candidateId": "fomo.baseline.momentum5",
+      "horizon": 10,
+      "status": "preregistered",
+      "outcomeFamily": "fomoContinuation",
+      "complexity": "baseline",
+      "availability": "daily_available"
+    },
+    {
+      "trialId": "fomo.baseline.volume20@1",
+      "candidateId": "fomo.baseline.volume20",
+      "horizon": 1,
+      "status": "preregistered",
+      "outcomeFamily": "fomoContinuation",
+      "complexity": "baseline",
+      "availability": "daily_available"
+    },
+    {
+      "trialId": "fomo.baseline.volume20@3",
+      "candidateId": "fomo.baseline.volume20",
+      "horizon": 3,
+      "status": "preregistered",
+      "outcomeFamily": "fomoContinuation",
+      "complexity": "baseline",
+      "availability": "daily_available"
+    },
+    {
+      "trialId": "fomo.baseline.volume20@5",
+      "candidateId": "fomo.baseline.volume20",
+      "horizon": 5,
+      "status": "preregistered",
+      "outcomeFamily": "fomoContinuation",
+      "complexity": "baseline",
+      "availability": "daily_available"
+    },
+    {
+      "trialId": "fomo.baseline.volume20@10",
+      "candidateId": "fomo.baseline.volume20",
+      "horizon": 10,
+      "status": "preregistered",
+      "outcomeFamily": "fomoContinuation",
+      "complexity": "baseline",
+      "availability": "daily_available"
+    },
+    {
+      "trialId": "fomo.baseline.breakout20@1",
+      "candidateId": "fomo.baseline.breakout20",
+      "horizon": 1,
+      "status": "preregistered",
+      "outcomeFamily": "fomoContinuation",
+      "complexity": "baseline",
+      "availability": "daily_available"
+    },
+    {
+      "trialId": "fomo.baseline.breakout20@3",
+      "candidateId": "fomo.baseline.breakout20",
+      "horizon": 3,
+      "status": "preregistered",
+      "outcomeFamily": "fomoContinuation",
+      "complexity": "baseline",
+      "availability": "daily_available"
+    },
+    {
+      "trialId": "fomo.baseline.breakout20@5",
+      "candidateId": "fomo.baseline.breakout20",
+      "horizon": 5,
+      "status": "preregistered",
+      "outcomeFamily": "fomoContinuation",
+      "complexity": "baseline",
+      "availability": "daily_available"
+    },
+    {
+      "trialId": "fomo.baseline.breakout20@10",
+      "candidateId": "fomo.baseline.breakout20",
+      "horizon": 10,
+      "status": "preregistered",
+      "outcomeFamily": "fomoContinuation",
+      "complexity": "baseline",
+      "availability": "daily_available"
+    },
+    {
+      "trialId": "panic.documented@1",
+      "candidateId": "panic.documented",
+      "horizon": 1,
+      "status": "preregistered",
+      "outcomeFamily": "panicContinuation",
+      "complexity": "composite",
+      "availability": "daily_available"
+    },
+    {
+      "trialId": "panic.documented@3",
+      "candidateId": "panic.documented",
+      "horizon": 3,
+      "status": "preregistered",
+      "outcomeFamily": "panicContinuation",
+      "complexity": "composite",
+      "availability": "daily_available"
+    },
+    {
+      "trialId": "panic.documented@5",
+      "candidateId": "panic.documented",
+      "horizon": 5,
+      "status": "preregistered",
+      "outcomeFamily": "panicContinuation",
+      "complexity": "composite",
+      "availability": "daily_available"
+    },
+    {
+      "trialId": "panic.documented@10",
+      "candidateId": "panic.documented",
+      "horizon": 10,
+      "status": "preregistered",
+      "outcomeFamily": "panicContinuation",
+      "complexity": "composite",
+      "availability": "daily_available"
+    },
+    {
+      "trialId": "panic.equal@1",
+      "candidateId": "panic.equal",
+      "horizon": 1,
+      "status": "preregistered",
+      "outcomeFamily": "panicContinuation",
+      "complexity": "composite",
+      "availability": "daily_available"
+    },
+    {
+      "trialId": "panic.equal@3",
+      "candidateId": "panic.equal",
+      "horizon": 3,
+      "status": "preregistered",
+      "outcomeFamily": "panicContinuation",
+      "complexity": "composite",
+      "availability": "daily_available"
+    },
+    {
+      "trialId": "panic.equal@5",
+      "candidateId": "panic.equal",
+      "horizon": 5,
+      "status": "preregistered",
+      "outcomeFamily": "panicContinuation",
+      "complexity": "composite",
+      "availability": "daily_available"
+    },
+    {
+      "trialId": "panic.equal@10",
+      "candidateId": "panic.equal",
+      "horizon": 10,
+      "status": "preregistered",
+      "outcomeFamily": "panicContinuation",
+      "complexity": "composite",
+      "availability": "daily_available"
+    },
+    {
+      "trialId": "panic.deduplicated@1",
+      "candidateId": "panic.deduplicated",
+      "horizon": 1,
+      "status": "preregistered",
+      "outcomeFamily": "panicContinuation",
+      "complexity": "composite",
+      "availability": "daily_available"
+    },
+    {
+      "trialId": "panic.deduplicated@3",
+      "candidateId": "panic.deduplicated",
+      "horizon": 3,
+      "status": "preregistered",
+      "outcomeFamily": "panicContinuation",
+      "complexity": "composite",
+      "availability": "daily_available"
+    },
+    {
+      "trialId": "panic.deduplicated@5",
+      "candidateId": "panic.deduplicated",
+      "horizon": 5,
+      "status": "preregistered",
+      "outcomeFamily": "panicContinuation",
+      "complexity": "composite",
+      "availability": "daily_available"
+    },
+    {
+      "trialId": "panic.deduplicated@10",
+      "candidateId": "panic.deduplicated",
+      "horizon": 10,
+      "status": "preregistered",
+      "outcomeFamily": "panicContinuation",
+      "complexity": "composite",
+      "availability": "daily_available"
+    },
+    {
+      "trialId": "panic.baseline.drawdown3@1",
+      "candidateId": "panic.baseline.drawdown3",
+      "horizon": 1,
+      "status": "preregistered",
+      "outcomeFamily": "panicContinuation",
+      "complexity": "baseline",
+      "availability": "daily_available"
+    },
+    {
+      "trialId": "panic.baseline.drawdown3@3",
+      "candidateId": "panic.baseline.drawdown3",
+      "horizon": 3,
+      "status": "preregistered",
+      "outcomeFamily": "panicContinuation",
+      "complexity": "baseline",
+      "availability": "daily_available"
+    },
+    {
+      "trialId": "panic.baseline.drawdown3@5",
+      "candidateId": "panic.baseline.drawdown3",
+      "horizon": 5,
+      "status": "preregistered",
+      "outcomeFamily": "panicContinuation",
+      "complexity": "baseline",
+      "availability": "daily_available"
+    },
+    {
+      "trialId": "panic.baseline.drawdown3@10",
+      "candidateId": "panic.baseline.drawdown3",
+      "horizon": 10,
+      "status": "preregistered",
+      "outcomeFamily": "panicContinuation",
+      "complexity": "baseline",
+      "availability": "daily_available"
+    },
+    {
+      "trialId": "panic.baseline.volume20@1",
+      "candidateId": "panic.baseline.volume20",
+      "horizon": 1,
+      "status": "preregistered",
+      "outcomeFamily": "panicContinuation",
+      "complexity": "baseline",
+      "availability": "daily_available"
+    },
+    {
+      "trialId": "panic.baseline.volume20@3",
+      "candidateId": "panic.baseline.volume20",
+      "horizon": 3,
+      "status": "preregistered",
+      "outcomeFamily": "panicContinuation",
+      "complexity": "baseline",
+      "availability": "daily_available"
+    },
+    {
+      "trialId": "panic.baseline.volume20@5",
+      "candidateId": "panic.baseline.volume20",
+      "horizon": 5,
+      "status": "preregistered",
+      "outcomeFamily": "panicContinuation",
+      "complexity": "baseline",
+      "availability": "daily_available"
+    },
+    {
+      "trialId": "panic.baseline.volume20@10",
+      "candidateId": "panic.baseline.volume20",
+      "horizon": 10,
+      "status": "preregistered",
+      "outcomeFamily": "panicContinuation",
+      "complexity": "baseline",
+      "availability": "daily_available"
+    },
+    {
+      "trialId": "panic.baseline.lowBreak20@1",
+      "candidateId": "panic.baseline.lowBreak20",
+      "horizon": 1,
+      "status": "preregistered",
+      "outcomeFamily": "panicContinuation",
+      "complexity": "baseline",
+      "availability": "daily_available"
+    },
+    {
+      "trialId": "panic.baseline.lowBreak20@3",
+      "candidateId": "panic.baseline.lowBreak20",
+      "horizon": 3,
+      "status": "preregistered",
+      "outcomeFamily": "panicContinuation",
+      "complexity": "baseline",
+      "availability": "daily_available"
+    },
+    {
+      "trialId": "panic.baseline.lowBreak20@5",
+      "candidateId": "panic.baseline.lowBreak20",
+      "horizon": 5,
+      "status": "preregistered",
+      "outcomeFamily": "panicContinuation",
+      "complexity": "baseline",
+      "availability": "daily_available"
+    },
+    {
+      "trialId": "panic.baseline.lowBreak20@10",
+      "candidateId": "panic.baseline.lowBreak20",
+      "horizon": 10,
+      "status": "preregistered",
+      "outcomeFamily": "panicContinuation",
+      "complexity": "baseline",
+      "availability": "daily_available"
+    },
+    {
+      "trialId": "potentialPtp.documented@1",
+      "candidateId": "potentialPtp.documented",
+      "horizon": 1,
+      "status": "preregistered",
+      "outcomeFamily": "profitTaking",
+      "complexity": "composite",
+      "availability": "daily_available"
+    },
+    {
+      "trialId": "potentialPtp.documented@3",
+      "candidateId": "potentialPtp.documented",
+      "horizon": 3,
+      "status": "preregistered",
+      "outcomeFamily": "profitTaking",
+      "complexity": "composite",
+      "availability": "daily_available"
+    },
+    {
+      "trialId": "potentialPtp.documented@5",
+      "candidateId": "potentialPtp.documented",
+      "horizon": 5,
+      "status": "preregistered",
+      "outcomeFamily": "profitTaking",
+      "complexity": "composite",
+      "availability": "daily_available"
+    },
+    {
+      "trialId": "potentialPtp.documented@10",
+      "candidateId": "potentialPtp.documented",
+      "horizon": 10,
+      "status": "preregistered",
+      "outcomeFamily": "profitTaking",
+      "complexity": "composite",
+      "availability": "daily_available"
+    },
+    {
+      "trialId": "potentialPtp.equal@1",
+      "candidateId": "potentialPtp.equal",
+      "horizon": 1,
+      "status": "preregistered",
+      "outcomeFamily": "profitTaking",
+      "complexity": "composite",
+      "availability": "daily_available"
+    },
+    {
+      "trialId": "potentialPtp.equal@3",
+      "candidateId": "potentialPtp.equal",
+      "horizon": 3,
+      "status": "preregistered",
+      "outcomeFamily": "profitTaking",
+      "complexity": "composite",
+      "availability": "daily_available"
+    },
+    {
+      "trialId": "potentialPtp.equal@5",
+      "candidateId": "potentialPtp.equal",
+      "horizon": 5,
+      "status": "preregistered",
+      "outcomeFamily": "profitTaking",
+      "complexity": "composite",
+      "availability": "daily_available"
+    },
+    {
+      "trialId": "potentialPtp.equal@10",
+      "candidateId": "potentialPtp.equal",
+      "horizon": 10,
+      "status": "preregistered",
+      "outcomeFamily": "profitTaking",
+      "complexity": "composite",
+      "availability": "daily_available"
+    },
+    {
+      "trialId": "potentialPtp.breadth@1",
+      "candidateId": "potentialPtp.breadth",
+      "horizon": 1,
+      "status": "preregistered",
+      "outcomeFamily": "profitTaking",
+      "complexity": "composite",
+      "availability": "daily_available"
+    },
+    {
+      "trialId": "potentialPtp.breadth@3",
+      "candidateId": "potentialPtp.breadth",
+      "horizon": 3,
+      "status": "preregistered",
+      "outcomeFamily": "profitTaking",
+      "complexity": "composite",
+      "availability": "daily_available"
+    },
+    {
+      "trialId": "potentialPtp.breadth@5",
+      "candidateId": "potentialPtp.breadth",
+      "horizon": 5,
+      "status": "preregistered",
+      "outcomeFamily": "profitTaking",
+      "complexity": "composite",
+      "availability": "daily_available"
+    },
+    {
+      "trialId": "potentialPtp.breadth@10",
+      "candidateId": "potentialPtp.breadth",
+      "horizon": 10,
+      "status": "preregistered",
+      "outcomeFamily": "profitTaking",
+      "complexity": "composite",
+      "availability": "daily_available"
+    },
+    {
+      "trialId": "potentialPtp.baseline.runup20@1",
+      "candidateId": "potentialPtp.baseline.runup20",
+      "horizon": 1,
+      "status": "preregistered",
+      "outcomeFamily": "profitTaking",
+      "complexity": "baseline",
+      "availability": "daily_available"
+    },
+    {
+      "trialId": "potentialPtp.baseline.runup20@3",
+      "candidateId": "potentialPtp.baseline.runup20",
+      "horizon": 3,
+      "status": "preregistered",
+      "outcomeFamily": "profitTaking",
+      "complexity": "baseline",
+      "availability": "daily_available"
+    },
+    {
+      "trialId": "potentialPtp.baseline.runup20@5",
+      "candidateId": "potentialPtp.baseline.runup20",
+      "horizon": 5,
+      "status": "preregistered",
+      "outcomeFamily": "profitTaking",
+      "complexity": "baseline",
+      "availability": "daily_available"
+    },
+    {
+      "trialId": "potentialPtp.baseline.runup20@10",
+      "candidateId": "potentialPtp.baseline.runup20",
+      "horizon": 10,
+      "status": "preregistered",
+      "outcomeFamily": "profitTaking",
+      "complexity": "baseline",
+      "availability": "daily_available"
+    },
+    {
+      "trialId": "potentialPtp.baseline.vwapExtension@1",
+      "candidateId": "potentialPtp.baseline.vwapExtension",
+      "horizon": 1,
+      "status": "preregistered",
+      "outcomeFamily": "profitTaking",
+      "complexity": "baseline",
+      "availability": "daily_available"
+    },
+    {
+      "trialId": "potentialPtp.baseline.vwapExtension@3",
+      "candidateId": "potentialPtp.baseline.vwapExtension",
+      "horizon": 3,
+      "status": "preregistered",
+      "outcomeFamily": "profitTaking",
+      "complexity": "baseline",
+      "availability": "daily_available"
+    },
+    {
+      "trialId": "potentialPtp.baseline.vwapExtension@5",
+      "candidateId": "potentialPtp.baseline.vwapExtension",
+      "horizon": 5,
+      "status": "preregistered",
+      "outcomeFamily": "profitTaking",
+      "complexity": "baseline",
+      "availability": "daily_available"
+    },
+    {
+      "trialId": "potentialPtp.baseline.vwapExtension@10",
+      "candidateId": "potentialPtp.baseline.vwapExtension",
+      "horizon": 10,
+      "status": "preregistered",
+      "outcomeFamily": "profitTaking",
+      "complexity": "baseline",
+      "availability": "daily_available"
+    },
+    {
+      "trialId": "relief.originalProxy@1",
+      "candidateId": "relief.originalProxy",
+      "horizon": 1,
+      "status": "preregistered",
+      "outcomeFamily": "panicRelief",
+      "complexity": "proxy",
+      "availability": "daily_available"
+    },
+    {
+      "trialId": "relief.originalProxy@3",
+      "candidateId": "relief.originalProxy",
+      "horizon": 3,
+      "status": "preregistered",
+      "outcomeFamily": "panicRelief",
+      "complexity": "proxy",
+      "availability": "daily_available"
+    },
+    {
+      "trialId": "relief.originalProxy@5",
+      "candidateId": "relief.originalProxy",
+      "horizon": 5,
+      "status": "preregistered",
+      "outcomeFamily": "panicRelief",
+      "complexity": "proxy",
+      "availability": "daily_available"
+    },
+    {
+      "trialId": "relief.originalProxy@10",
+      "candidateId": "relief.originalProxy",
+      "horizon": 10,
+      "status": "preregistered",
+      "outcomeFamily": "panicRelief",
+      "complexity": "proxy",
+      "availability": "daily_available"
+    },
+    {
+      "trialId": "relief.persistenceGated@1",
+      "candidateId": "relief.persistenceGated",
+      "horizon": 1,
+      "status": "preregistered",
+      "outcomeFamily": "panicRelief",
+      "complexity": "repaired",
+      "availability": "daily_available"
+    },
+    {
+      "trialId": "relief.persistenceGated@3",
+      "candidateId": "relief.persistenceGated",
+      "horizon": 3,
+      "status": "preregistered",
+      "outcomeFamily": "panicRelief",
+      "complexity": "repaired",
+      "availability": "daily_available"
+    },
+    {
+      "trialId": "relief.persistenceGated@5",
+      "candidateId": "relief.persistenceGated",
+      "horizon": 5,
+      "status": "preregistered",
+      "outcomeFamily": "panicRelief",
+      "complexity": "repaired",
+      "availability": "daily_available"
+    },
+    {
+      "trialId": "relief.persistenceGated@10",
+      "candidateId": "relief.persistenceGated",
+      "horizon": 10,
+      "status": "preregistered",
+      "outcomeFamily": "panicRelief",
+      "complexity": "repaired",
+      "availability": "daily_available"
+    }
+  ],
+  "changeLog": [
+    {
+      "type": "initial_freeze",
+      "date": "2026-07-10",
+      "description": "All candidate and horizon combinations were frozen before outcome inspection."
+    }
+  ]
+}

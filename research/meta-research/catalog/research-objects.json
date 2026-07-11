@@ -1,0 +1,95 @@
+{
+  "schemaVersion": "research-object-catalog.v1",
+  "objects": [
+    {
+      "descriptor": "research/meta-research/objects/dataset-contracts/DC-001-ontology-evidence/object.json"
+    },
+    {
+      "descriptor": "research/meta-research/objects/dataset-contracts/DC-002-program-data/object.json"
+    },
+    {
+      "descriptor": "research/meta-research/objects/dataset-contracts/DC-003-behavior-regime/object.json"
+    },
+    {
+      "descriptor": "research/meta-research/objects/dataset-contracts/DC-004-relative-value/object.json"
+    },
+    {
+      "descriptor": "research/meta-research/objects/dataset-contracts/DC-005-microstructure/object.json"
+    },
+    {
+      "descriptor": "research/meta-research/objects/dataset-contracts/DC-006-execution-cost/object.json"
+    },
+    {
+      "descriptor": "research/meta-research/objects/dataset-contracts/DC-007-tail-risk/object.json"
+    },
+    {
+      "descriptor": "research/meta-research/objects/dataset-contracts/DC-008-synthesis-inputs/object.json"
+    },
+    {
+      "descriptor": "research/meta-research/objects/decision-records/DR-001-rb001-boundary/object.json"
+    },
+    {
+      "descriptor": "research/meta-research/objects/evidence-bundles/EB-001-rb001-integrity-audit/object.json"
+    },
+    {
+      "descriptor": "research/meta-research/objects/model-candidates/MC-001-bayesian-hsmm-competing-risks/object.json"
+    },
+    {
+      "descriptor": "research/meta-research/objects/meta-studies/MS-001-research-program-governance/object.json"
+    },
+    {
+      "descriptor": "research/meta-research/objects/baselines/RB-001-v1-4-indicator-validation/object.json"
+    },
+    {
+      "descriptor": "research/meta-research/objects/programs/RP-001-quantitative-market-behavior/object.json"
+    },
+    {
+      "descriptor": "research/meta-research/objects/research-questions/RQ-001-market-state-identifiability/object.json"
+    },
+    {
+      "descriptor": "research/meta-research/objects/research-questions/RQ-002-data-lineage/object.json"
+    },
+    {
+      "descriptor": "research/meta-research/objects/research-questions/RQ-003-behavior-regime/object.json"
+    },
+    {
+      "descriptor": "research/meta-research/objects/research-questions/RQ-004-relative-value/object.json"
+    },
+    {
+      "descriptor": "research/meta-research/objects/research-questions/RQ-005-microstructure/object.json"
+    },
+    {
+      "descriptor": "research/meta-research/objects/research-questions/RQ-006-execution-cost/object.json"
+    },
+    {
+      "descriptor": "research/meta-research/objects/research-questions/RQ-007-tail-risk/object.json"
+    },
+    {
+      "descriptor": "research/meta-research/objects/research-questions/RQ-008-synthesis/object.json"
+    },
+    {
+      "descriptor": "research/meta-research/objects/study-protocols/SP-001-market-state-ontology/object.json"
+    },
+    {
+      "descriptor": "research/meta-research/objects/study-protocols/SP-002-data-lineage-audit/object.json"
+    },
+    {
+      "descriptor": "research/meta-research/objects/study-protocols/SP-003-behavior-regime/object.json"
+    },
+    {
+      "descriptor": "research/meta-research/objects/study-protocols/SP-004-relative-value/object.json"
+    },
+    {
+      "descriptor": "research/meta-research/objects/study-protocols/SP-005-microstructure/object.json"
+    },
+    {
+      "descriptor": "research/meta-research/objects/study-protocols/SP-006-execution-cost/object.json"
+    },
+    {
+      "descriptor": "research/meta-research/objects/study-protocols/SP-007-tail-risk/object.json"
+    },
+    {
+      "descriptor": "research/meta-research/objects/study-protocols/SP-008-synthesis/object.json"
+    }
+  ]
+}

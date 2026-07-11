@@ -5,8 +5,11 @@ import type {
   QuantIndicatorDecisionStatus,
   QuantIndicatorSeverity,
   QuantIndicatorSignalKey,
-  QuantIndicatorSnapshotPayload
+  QuantIndicatorSnapshotPayload,
+  ProfitTakingPressureCauseKey,
+  ProfitTakingPressureCausePayload
 } from "../shared/contracts/app-runtime-contract";
+import type { QuantIndicatorLoadStatus } from "./useQuantIndicators";
 
 export type CardStatusFilterValue = "all" | QuantIndicatorDecisionStatus;
 
@@ -76,6 +79,25 @@ export interface BeginnerExplanationSectionViewModel {
   inputs: QuantIndicatorExplanationTracePayload["inputs"];
 }
 
+export interface ProfitTakingRiskCauseViewModel {
+  key: ProfitTakingPressureCauseKey;
+  label: string;
+  score: number | null;
+  scoreLabel: string;
+  statusLabel: string;
+  severity: QuantIndicatorSeverity;
+  reason: string | null;
+}
+
+export interface ProfitTakingRiskViewModel {
+  title: string;
+  scoreLabel: string;
+  statusLabel: string;
+  summary: string;
+  severity: QuantIndicatorSeverity;
+  causes: ProfitTakingRiskCauseViewModel[];
+}
+
 export interface ConditionalZoneViewModel {
   key: "watch" | "entry" | "invalidated";
   title: string;
@@ -98,6 +120,7 @@ export interface DetailPanelViewModel {
   tagsText: string;
   groupText: string;
   checklistRows: QuantChecklistRowViewModel[];
+  profitTakingRisk: ProfitTakingRiskViewModel;
   conditionalZones: ConditionalZoneViewModel[];
   dataQuality: DataQualityViewModel;
   explanationSections: BeginnerExplanationSectionViewModel[];
@@ -124,7 +147,7 @@ const indicatorLabels: Record<QuantIndicatorSignalKey, string> = {
   rsiMomentum: "RSI/모멘텀",
   atrStop: "ATR/손절 폭",
   supplyPressure: "매물대",
-  profitTakingPressure: "차익실현 압박 추정",
+  profitTakingPressure: "차익실현 리스크",
   riskReward: "손익비",
   marketSentimentScore: "장중 정량 심리 점수",
   intradayTradeScore: "종합 데이트레이딩 점수"
@@ -139,7 +162,6 @@ const indicatorOrder: QuantIndicatorSignalKey[] = [
   "distanceProfile",
   "rsiMomentum",
   "atrStop",
-  "supplyPressure",
   "profitTakingPressure",
   "riskReward",
   "marketSentimentScore",
@@ -150,6 +172,7 @@ export function createWatchStockCardViewModel(input: {
   card: WatchStockCardDto;
   marketDataSnapshot: MarketDataSnapshotPayload | null;
   quantIndicatorSnapshot: QuantIndicatorSnapshotPayload | null;
+  quantIndicatorStatus: QuantIndicatorLoadStatus;
 }): WatchStockCardViewModel {
   return {
     card: input.card,
@@ -159,9 +182,15 @@ export function createWatchStockCardViewModel(input: {
     ),
     marketDataStatusLabel: formatMarketDataStatus(input.marketDataSnapshot),
     marketDataStatusClassName: formatMarketDataStatusClassName(input.marketDataSnapshot),
-    quantDecisionLabel: input.quantIndicatorSnapshot?.decisionLabel ?? "지표 대기",
+    quantDecisionLabel: formatQuantDecisionLabel(
+      input.quantIndicatorSnapshot,
+      input.quantIndicatorStatus
+    ),
     quantDecisionClassName: formatQuantDecisionClassName(input.quantIndicatorSnapshot),
-    quantUpdatedAtLabel: formatQuantUpdatedAt(input.quantIndicatorSnapshot),
+    quantUpdatedAtLabel: formatQuantUpdatedAt(
+      input.quantIndicatorSnapshot,
+      input.quantIndicatorStatus
+    ),
     nextCheckLabel: input.quantIndicatorSnapshot?.nextCheckLabel ?? null,
     signalChips:
       input.quantIndicatorSnapshot?.signals.slice(0, 3).map((signal) => {
@@ -181,6 +210,7 @@ export function createDetailPanelViewModel(input: {
   card: WatchStockCardDto;
   marketDataSnapshot: MarketDataSnapshotPayload | null;
   quantIndicatorSnapshot: QuantIndicatorSnapshotPayload | null;
+  quantIndicatorStatus: QuantIndicatorLoadStatus;
 }): DetailPanelViewModel {
   return {
     title: input.card.displayName,
@@ -193,11 +223,18 @@ export function createDetailPanelViewModel(input: {
     tagsText: input.card.tags.join(", "),
     groupText: input.card.groupId ?? "",
     checklistRows: createChecklistRows(input.quantIndicatorSnapshot),
+    profitTakingRisk: createProfitTakingRisk(
+      input.quantIndicatorSnapshot,
+      input.quantIndicatorStatus
+    ),
     conditionalZones: createConditionalZones(input.quantIndicatorSnapshot),
     dataQuality: createDataQuality(input.marketDataSnapshot, input.quantIndicatorSnapshot),
     explanationSections: createExplanationSections(input.quantIndicatorSnapshot),
     aiInsightLabel: "AI 분석 대기",
-    quantUpdatedAtLabel: formatQuantUpdatedAt(input.quantIndicatorSnapshot)
+    quantUpdatedAtLabel: formatQuantUpdatedAt(
+      input.quantIndicatorSnapshot,
+      input.quantIndicatorStatus
+    )
   };
 }
 
@@ -385,6 +422,133 @@ function createExplanationSections(
   );
 }
 
+const profitTakingCauseLabels: Record<ProfitTakingPressureCauseKey, string> = {
+  profitBurden: "수익권 부담",
+  realizedSellPressure: "실제 매도 압력",
+  overheadSupplyPressure: "위쪽 매물 부담",
+  liquidityImpactRisk: "체결 환경 위험"
+};
+
+const profitTakingCauseOrder: ProfitTakingPressureCauseKey[] = [
+  "profitBurden",
+  "realizedSellPressure",
+  "overheadSupplyPressure",
+  "liquidityImpactRisk"
+];
+
+function createProfitTakingRisk(
+  snapshot: QuantIndicatorSnapshotPayload | null,
+  quantIndicatorStatus: QuantIndicatorLoadStatus
+): ProfitTakingRiskViewModel {
+  const indicator = snapshot?.indicators.profitTakingPressure ?? null;
+
+  if (indicator === null || indicator.status === "unavailable") {
+    return {
+      title: "차익실현 리스크",
+      scoreLabel: "--",
+      statusLabel: resolveUnavailableProfitTakingRiskStatusLabel(
+        indicator?.label ?? null,
+        quantIndicatorStatus
+      ),
+      summary: resolveUnavailableProfitTakingRiskSummary(quantIndicatorStatus),
+      severity: indicator?.severity ?? "unavailable",
+      causes: profitTakingCauseOrder.map((key) =>
+        createUnavailableProfitTakingCauseViewModel(key, indicator?.causes[key] ?? null)
+      )
+    };
+  }
+
+  const causes = profitTakingCauseOrder.map((key) =>
+    createProfitTakingCauseViewModel(key, indicator.causes[key])
+  );
+  const strongestCause = [...causes]
+    .filter((cause) => cause.score !== null)
+    .sort((left, right) => (right.score ?? -1) - (left.score ?? -1))[0];
+
+  return {
+    title: "차익실현 리스크",
+    scoreLabel: formatScore(indicator.score) ?? "--",
+    statusLabel: indicator.label,
+    summary: resolveProfitTakingRiskSummary(strongestCause, quantIndicatorStatus),
+    severity: indicator.severity,
+    causes
+  };
+}
+
+function resolveUnavailableProfitTakingRiskStatusLabel(
+  fallbackLabel: string | null,
+  quantIndicatorStatus: QuantIndicatorLoadStatus
+): string {
+  if (quantIndicatorStatus === "error") {
+    return "차익실현 리스크 계산 실패";
+  }
+
+  if (quantIndicatorStatus === "emptyLoading") {
+    return "차익실현 리스크 계산 중";
+  }
+
+  return fallbackLabel ?? "차익실현 리스크 계산 중";
+}
+
+function resolveUnavailableProfitTakingRiskSummary(
+  quantIndicatorStatus: QuantIndicatorLoadStatus
+): string {
+  if (quantIndicatorStatus === "error") {
+    return "첫 계산에 실패했습니다. 다음 데이터 수집 때 다시 계산합니다.";
+  }
+
+  return "시장 데이터가 모이면 원인별 점수를 표시합니다.";
+}
+
+function resolveProfitTakingRiskSummary(
+  strongestCause: ProfitTakingRiskCauseViewModel | undefined,
+  quantIndicatorStatus: QuantIndicatorLoadStatus
+): string {
+  if (quantIndicatorStatus === "refreshing") {
+    return "기존 점수를 유지하며 새 데이터를 반영 중입니다.";
+  }
+
+  if (quantIndicatorStatus === "failedRefresh") {
+    return "최근값 유지 중입니다. 다음 갱신에서 다시 계산합니다.";
+  }
+
+  if (strongestCause === undefined) {
+    return "원인별 점수가 아직 충분하지 않습니다.";
+  }
+
+  return `${strongestCause.label}이 현재 점수에 가장 크게 기여합니다.`;
+}
+
+function createProfitTakingCauseViewModel(
+  key: ProfitTakingPressureCauseKey,
+  cause: ProfitTakingPressureCausePayload
+): ProfitTakingRiskCauseViewModel {
+  return {
+    key,
+    label: profitTakingCauseLabels[key],
+    score: cause.score,
+    scoreLabel: formatScore(cause.score) ?? "--",
+    statusLabel: cause.label,
+    severity: cause.severity,
+    reason: cause.reason
+  };
+}
+
+function createUnavailableProfitTakingCauseViewModel(
+  key: ProfitTakingPressureCauseKey,
+  cause: ProfitTakingPressureCausePayload | null
+): ProfitTakingRiskCauseViewModel {
+  return {
+    key,
+    label: profitTakingCauseLabels[key],
+    score: null,
+    scoreLabel: "--",
+    statusLabel: cause?.label ?? "계산 대기",
+    severity: cause?.severity ?? "unavailable",
+    reason: cause?.reason ?? null
+  };
+}
+
 function createConditionalZones(
   snapshot: QuantIndicatorSnapshotPayload | null
 ): ConditionalZoneViewModel[] {
@@ -524,9 +688,47 @@ function formatMarketDataStatusClassName(snapshot: MarketDataSnapshotPayload | n
   return "watch-card__status watch-card__status--ready";
 }
 
-function formatQuantUpdatedAt(snapshot: QuantIndicatorSnapshotPayload | null): string {
+function formatQuantDecisionLabel(
+  snapshot: QuantIndicatorSnapshotPayload | null,
+  quantIndicatorStatus: QuantIndicatorLoadStatus
+): string {
+  if (snapshot !== null) {
+    return snapshot.decisionLabel;
+  }
+
+  if (quantIndicatorStatus === "emptyLoading") {
+    return "계산 중";
+  }
+
+  if (quantIndicatorStatus === "error") {
+    return "계산 실패";
+  }
+
+  return "지표 대기";
+}
+
+function formatQuantUpdatedAt(
+  snapshot: QuantIndicatorSnapshotPayload | null,
+  quantIndicatorStatus: QuantIndicatorLoadStatus
+): string {
   if (snapshot === null) {
+    if (quantIndicatorStatus === "emptyLoading") {
+      return "차익실현 리스크 계산 중";
+    }
+
+    if (quantIndicatorStatus === "error") {
+      return "지표 계산 실패";
+    }
+
     return "지표 업데이트 대기";
+  }
+
+  if (quantIndicatorStatus === "refreshing") {
+    return `업데이트 중 · ${formatSnapshotTime(snapshot.calculatedAt)} 기준`;
+  }
+
+  if (quantIndicatorStatus === "failedRefresh") {
+    return `최근값 유지 중 · ${formatSnapshotTime(snapshot.calculatedAt)} 기준`;
   }
 
   return `지표 업데이트 ${formatSnapshotTime(snapshot.calculatedAt)}`;

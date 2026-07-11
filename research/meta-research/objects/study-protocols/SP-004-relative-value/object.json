@@ -1,0 +1,20 @@
+{
+  "schemaVersion": "research-object.v1",
+  "id": "SP-004",
+  "type": "StudyProtocol",
+  "title": "PIT 상대가치 20거래일 예측 연구 프로토콜",
+  "version": "1.0.0",
+  "lifecycleState": "proposed",
+  "evidenceLevel": "conceptual",
+  "purpose": "PIT 상대가치 잔차의 20거래일 조정 초과수익 사건 OOF Brier 개선을 가격·요인 기준선과 비교하는 후보·분할·반증·중단·공개 규칙을 고정한다.",
+  "dependsOn": [
+    "DC-004",
+    "RQ-004"
+  ],
+  "artifacts": [
+    "research/meta-research/objects/study-protocols/SP-004-relative-value/protocol.md",
+    "research/meta-research/objects/study-protocols/SP-004-relative-value/protocol.sha256",
+    "research/rp-001/trials/ST-VAL-001.json"
+  ]
+}
+

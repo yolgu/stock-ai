@@ -1,0 +1,16 @@
+{
+  "schemaVersion": "research-object.v1",
+  "id": "RQ-008",
+  "type": "ResearchQuestion",
+  "title": "독립 외부표본 연구 통합의 20거래일 효용 증분",
+  "version": "1.0.0",
+  "lifecycleState": "proposed",
+  "evidenceLevel": "conceptual",
+  "purpose": "독립 external OOF만 사용한 통합의 향후 20거래일 비용·위험조정 효용이 NoTrade·buy-hold·고정 단순전략·적격 단일연구 기준선보다 큰지 식별한다.",
+  "dependsOn": [
+    "RP-001"
+  ],
+  "artifacts": [
+    "research/meta-research/objects/research-questions/RQ-008-synthesis/question.md"
+  ]
+}

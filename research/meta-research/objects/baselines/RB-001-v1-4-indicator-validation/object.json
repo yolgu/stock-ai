@@ -1,0 +1,17 @@
+{
+  "schemaVersion": "research-object.v1",
+  "id": "RB-001",
+  "type": "ResearchBaseline",
+  "title": "FOMO·패닉·차익실현 지표 검증 v1.4",
+  "version": "1.4.0",
+  "lifecycleState": "frozen",
+  "evidenceLevel": "confirmatory",
+  "purpose": "기존 수식과 일봉 프록시의 수학·데이터·외부검증 결과를 변경 불가 기준선으로 보존한다.",
+  "dependsOn": [],
+  "artifacts": [
+    "docs/codex/research/2026-07-10-mania-panic-fomo-formula-final-report.md",
+    "research/indicator-validation/preregistration.json",
+    "research/meta-research/objects/baselines/RB-001-v1-4-indicator-validation/README.md"
+  ]
+}
+

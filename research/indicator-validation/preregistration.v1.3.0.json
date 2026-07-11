@@ -1,0 +1,1659 @@
+{
+  "research": {
+    "id": "mania-indicator-validation",
+    "version": "1.3.0",
+    "supersedes": "1.2.0",
+    "status": "frozen",
+    "frozenAt": "2026-07-10",
+    "dataCutoff": "2026-07-09",
+    "seed": 20260710,
+    "noMarketDataAnalyzed": true,
+    "changeReason": "pre_data_probability_and_numeric_contract_completion"
+  },
+  "data": {
+    "symbols": [
+      {
+        "symbol": "TSLA",
+        "role": "candidate_selection"
+      },
+      {
+        "symbol": "NVDA",
+        "role": "external_replication"
+      },
+      {
+        "symbol": "MU",
+        "role": "holdout"
+      },
+      {
+        "symbol": "000660",
+        "role": "holdout"
+      }
+    ],
+    "request": {
+      "coverage": "full_available",
+      "startDate": "1900-01-01",
+      "endDate": "2026-07-09",
+      "interval": "1d",
+      "adjusted": true,
+      "completedCandlesOnly": true
+    }
+  },
+  "anchors": [
+    {
+      "id": "tsla-2020-q2-earnings-next-session",
+      "symbol": "TSLA",
+      "date": "2020-07-23",
+      "event": "2020 Q2 earnings",
+      "timing": "next_session",
+      "role": "primary"
+    },
+    {
+      "id": "nvda-fy2024-q1-earnings-next-session",
+      "symbol": "NVDA",
+      "date": "2023-05-25",
+      "event": "FY2024 Q1 earnings and guidance",
+      "timing": "next_session",
+      "role": "primary"
+    },
+    {
+      "id": "tsla-five-for-one-split-next-session",
+      "symbol": "TSLA",
+      "date": "2020-08-12",
+      "event": "five-for-one stock split announcement",
+      "timing": "next_session",
+      "role": "sensitivity"
+    }
+  ],
+  "protocol": {
+    "dataCutoff": "2026-07-09",
+    "windows": {
+      "anchored": {
+        "anchorIncluded": true,
+        "forwardActualCandles": 360,
+        "blocks": {
+          "count": 3,
+          "actualCandlesPerBlock": 120
+        }
+      },
+      "current": {
+        "symbols": [
+          "MU",
+          "000660"
+        ],
+        "lastActualCandles": 120,
+        "fourMonth": {
+          "startDate": "2026-03-10",
+          "endDate": "2026-07-09",
+          "status": "interim"
+        }
+      }
+    },
+    "horizons": [
+      1,
+      3,
+      5,
+      10
+    ],
+    "outcomeObservation": {
+      "signalTime": "close_t",
+      "futureWindow": {
+        "start": "t+1",
+        "end": "t+h",
+        "inclusive": true
+      },
+      "reference": {
+        "close": "C_t",
+        "atr": "ATR14_t"
+      },
+      "firstPassage": {
+        "source": "future_OHLC",
+        "sameSessionDualHit": "ambiguous_excluded",
+        "neitherHit": "failure"
+      },
+      "rightCensoring": {
+        "tail": "last_h",
+        "disposition": "right_censored_excluded"
+      }
+    },
+    "percentile": {
+      "method": "midrank",
+      "formula": "(count_less + 0.5 * count_equal) / n",
+      "referenceWindow": {
+        "direction": "prior_only",
+        "maxSessions": 252,
+        "minSessions": 60,
+        "includesSignalSession": false
+      }
+    },
+    "candidateScoring": {
+      "informationSet": "daily adjusted OHLCV available through close_t only",
+      "componentDomain": [
+        0,
+        1
+      ],
+      "compositeFormula": "score_t = 100 * sum_i(w_i * x_{i,t})",
+      "weightConstraint": {
+        "formula": "sum_i(w_i) = 1",
+        "numericTolerance": 1e-12
+      },
+      "scoreRange": [
+        0,
+        100
+      ],
+      "baselineAndProxyFormula": "score_t = 100 * x_t",
+      "missingComponent": {
+        "scoreDisposition": "unavailable",
+        "reweightAllowed": false
+      }
+    },
+    "probabilityCalibration": {
+      "purpose": "convert an ordinal risk score into an out-of-sample event probability without treating score/100 as a probability",
+      "scoreDirection": "higher_score_means_non_decreasing_event_probability",
+      "fitUnit": "fold_x_candidate_x_outcome_x_horizon",
+      "trainingPairs": {
+        "requiredFields": [
+          "finite_score",
+          "binary_outcome_label"
+        ],
+        "source": "current fold training partition only",
+        "minimumValidPairs": 30,
+        "eventWeightsUsedForFit": false,
+        "missingPairDisposition": "excluded_from_calibration_fit",
+        "insufficientPairDisposition": "calibrator_and_test_probabilities_unavailable"
+      },
+      "quantileBins": {
+        "binCount": 5,
+        "internalQuantiles": [
+          0.2,
+          0.4,
+          0.6,
+          0.8
+        ],
+        "edgeAlgorithm": "for q=k/5, use the score at one-based order statistic ceil(q*n) after ascending score sort",
+        "binIntervals": "(-infinity,e1],(e1,e2],...,(em,infinity)",
+        "tiedScoreRule": "equal scores are never split across bins",
+        "duplicateEdgeRule": "collapse equal adjacent quantile edges before assigning bins",
+        "emptyBinRule": "drop empty bins after edge collapse"
+      },
+      "binProbability": {
+        "prior": "Jeffreys Beta(0.5,0.5)",
+        "formula": "p_j = (s_j + 0.5) / (n_j + 1)",
+        "successCount": "unweighted count of label=1 in bin j",
+        "sampleCount": "unweighted count of valid training pairs in bin j"
+      },
+      "monotonicFit": {
+        "algorithm": "pool_adjacent_violators",
+        "direction": "non_decreasing_by_score_bin",
+        "initialValue": "binProbability.p_j",
+        "weight": "n_j",
+        "violationRule": "while a left fitted value is greater than its right neighbor, replace the adjacent violating blocks by their n-weighted mean and repeat until no violation remains"
+      },
+      "testApplication": {
+        "probabilitySource": "fitted monotonic bin value from the corresponding training-only calibrator",
+        "belowTrainingMinimum": "first non-empty fitted bin",
+        "aboveTrainingMaximum": "last non-empty fitted bin",
+        "missingScore": "probability_unavailable",
+        "testLabelsUsedForFit": false,
+        "retrainingOnTest": false
+      },
+      "replicationAndHoldout": {
+        "finalCalibratorFit": "after TSLA candidate selection, fit once using valid pairs from the TSLA candidate-selection window only",
+        "frozenApplicationSymbols": [
+          "NVDA",
+          "MU",
+          "000660"
+        ],
+        "replicationOrHoldoutLabelsUsedForFit": false,
+        "retrainingOrUpdatingAllowed": false
+      },
+      "trainBaseRateComparator": {
+        "fitUnit": "fold_x_outcome_x_horizon",
+        "trainingLabels": "all finite binary labels in the fold training partition; candidate score availability is not required",
+        "minimumValidLabels": 30,
+        "formula": "p_base = (s_train + 0.5) / (n_train + 1)",
+        "prior": "Jeffreys Beta(0.5,0.5)",
+        "application": "constant probability for every observation in that fold test partition",
+        "replicationAndHoldout": "freeze the TSLA candidate-selection-window Jeffreys base rate; do not refit"
+      }
+    },
+    "threshold": {
+      "fit": "train_only",
+      "quantile": 0.8,
+      "input": "raw candidate score",
+      "purpose": "alert classification only",
+      "probabilityCalibrationIndependent": true
+    },
+    "walkForward": {
+      "method": "expanding",
+      "trainingData": "past_only",
+      "purge": {
+        "sessions": 10,
+        "placement": "training_tail_before_test"
+      },
+      "embargo": {
+        "sessions": 10,
+        "placement": "after_test_before_next_train"
+      },
+      "testTuningAllowed": false
+    },
+    "episodes": {
+      "ordering": "chronological",
+      "start": "first_signal_crossing",
+      "newEventSuppression": "through_t_plus_h_inclusive",
+      "labels": "shared_across_candidates"
+    },
+    "marketEventClustering": {
+      "direction": "same",
+      "targetDateToleranceCalendarDays": 1,
+      "globalEventWeight": "1/clusterSize",
+      "symbolMetricsRetainEvents": true
+    },
+    "trialApplicability": {
+      "combination": "intersection",
+      "formula": "effectiveHorizons(candidate,outcome) = candidate.applicableHorizons intersect candidate.outcomeApplicableHorizons[outcome] intersect outcomeDefinition.applicableHorizons",
+      "missingOutcomeSpecificCandidateSet": "use candidate.applicableHorizons as the candidate outcome-specific set",
+      "missingOutcomeDefinitionSet": "use protocol.horizons as the outcome-definition set",
+      "outcomeMembershipRule": "an outcome is considered only when its id is present in candidate.outcomeDefinitionIds",
+      "candidateTrialRule": "candidate@h is applicable when at least one declared outcome has h in its effectiveHorizons",
+      "fixedReliefCases": {
+        "relief.originalProxy@1": {
+          "applicable": true,
+          "generatedOutcomes": [
+            "reliefFirstRebound"
+          ],
+          "excludedOutcomes": [
+            "fakeRelief"
+          ]
+        },
+        "relief.persistenceGated@1": {
+          "applicable": false,
+          "generatedOutcomes": [],
+          "excludedOutcomes": [
+            "reliefConfirmed",
+            "fakeRelief"
+          ]
+        }
+      },
+      "applicableFalseDisposition": {
+        "prediction": "not_generated",
+        "metrics": "excluded",
+        "minimumEventCount": "excluded_from_numerator_denominator_and_pass_fail",
+        "multipleTesting": "excluded_from_hypothesis_family_and_adjustment_count"
+      }
+    },
+    "phases": {
+      "prodrome": "t-5..t-1",
+      "start": "t",
+      "early": "start_to_half_barrier",
+      "middle": "half_barrier_to_full_barrier",
+      "extreme": "full_barrier_hit",
+      "firstRebound": {
+        "direction": "opposite",
+        "closeMoveMinimumAtr": 0.25
+      },
+      "confirmation": {
+        "consecutiveCloses": 2,
+        "newExtremeAllowed": false
+      },
+      "end": "confirmation_or_vertical_barrier"
+    },
+    "minimumEvents": {
+      "count": 30,
+      "unit": "candidate_x_outcome_x_symbol_x_split"
+    },
+    "bootstrap": {
+      "method": "moving_block",
+      "blockLengths": [
+        5,
+        10,
+        20
+      ],
+      "repetitions": 2000,
+      "seed": 20260710,
+      "confidenceInterval": {
+        "method": "percentile",
+        "lowerQuantile": 0.025,
+        "upperQuantile": 0.975
+      },
+      "metrics": [
+        "BrierDifference",
+        "PR-AUC",
+        "MCC",
+        "leadTime"
+      ]
+    },
+    "posterior": {
+      "prior": "Jeffreys",
+      "distribution": "Beta",
+      "alpha": 0.5,
+      "beta": 0.5
+    },
+    "significance": {
+      "alpha": 0.05,
+      "secondary": {
+        "method": "BH",
+        "scope": "within_family_x_horizon"
+      },
+      "primaryConclusions": {
+        "method": "Holm",
+        "scope": "across_primary_family_conclusions"
+      }
+    }
+  },
+  "outcomeDefinitions": {
+    "common": {
+      "observationProtocol": "protocol.outcomeObservation"
+    },
+    "eligibilityRules": {
+      "profitTakingLike": "(C_t / C_{t-20} - 1) >= 2 * (ATR14_t / C_t)",
+      "reliefAfterSelloff": "(max(C_{t-5:t-1}) - C_t) >= 1.5 * ATR14_t"
+    },
+    "reliefState": {
+      "informationSet": "fixed at close_t before any future outcome observation",
+      "selloffReferenceHigh": {
+        "formula": "max(C_{t-5:t-1})",
+        "inputs": [
+          "C_{t-5:t-1}"
+        ],
+        "unit": "price"
+      },
+      "episodeLow": {
+        "symbol": "episodeLow_t",
+        "formula": "min(L_{t-5:t})",
+        "inputs": [
+          "L_{t-5:t}"
+        ],
+        "unit": "price",
+        "futureRevisionAllowed": false
+      },
+      "midpointRecovery": {
+        "symbol": "midpointRecovery_t",
+        "formula": "episodeLow_t + 0.5 * (selloffReferenceHigh_t - episodeLow_t)",
+        "inputs": [
+          "episodeLow_t",
+          "selloffReferenceHigh_t"
+        ],
+        "unit": "price",
+        "futureRevisionAllowed": false
+      }
+    },
+    "fomoContinuation": {
+      "target": {
+        "direction": "upper",
+        "atrMultiple": 0.5
+      },
+      "opposite": {
+        "direction": "lower",
+        "atrMultiple": 0.3
+      }
+    },
+    "fomoExhaustion": {
+      "target": {
+        "direction": "lower",
+        "atrMultiple": 0.5
+      },
+      "opposite": {
+        "direction": "upper",
+        "atrMultiple": 0.5
+      }
+    },
+    "profitTakingLike": {
+      "eligibilityRuleId": "profitTakingLike",
+      "target": {
+        "direction": "lower",
+        "atrMultiple": 0.75
+      },
+      "opposite": {
+        "direction": "upper",
+        "atrMultiple": 0.75
+      }
+    },
+    "panicOnset": {
+      "target": {
+        "direction": "lower",
+        "atrMultiple": 1.5
+      },
+      "opposite": {
+        "direction": "upper",
+        "atrMultiple": 0.75
+      }
+    },
+    "panicContinuation": {
+      "target": {
+        "direction": "lower",
+        "atrMultiple": 0.75
+      },
+      "opposite": {
+        "direction": "upper",
+        "atrMultiple": 0.5
+      }
+    },
+    "reliefFirstRebound": {
+      "eligibilityRuleId": "reliefAfterSelloff",
+      "observationWindow": "t+1..t+h inclusive",
+      "firstPassageRule": "upper target before lower opposite; common same-session dual-hit and right-censoring rules apply",
+      "target": {
+        "direction": "upper",
+        "atrMultiple": 0.75,
+        "barrierFormula": "C_t + 0.75 * ATR14_t"
+      },
+      "opposite": {
+        "direction": "lower",
+        "atrMultiple": 0.5,
+        "barrierFormula": "C_t - 0.5 * ATR14_t"
+      }
+    },
+    "reliefConfirmed": {
+      "eligibilityRuleId": "reliefAfterSelloff",
+      "baseOutcomeDefinitionId": "reliefFirstRebound",
+      "baseFirstPassageWindow": "t+1..t+h-2 inclusive",
+      "baseTargetDeadline": "t+h-2",
+      "baseTargetHitSessionSymbol": "tau",
+      "confirmation": {
+        "sessions": 2,
+        "observationSessions": [
+          "tau+1",
+          "tau+2"
+        ],
+        "lowCondition": "L_s >= episodeLow_t for each confirmation session s",
+        "closeCondition": "C_s >= midpointRecovery_t for each confirmation session s",
+        "successRule": "base upper barrier is first hit at tau and both confirmation sessions satisfy both conditions",
+        "failureRule": "base rebound fails, or either confirmation session violates either condition"
+      },
+      "applicableHorizons": [
+        3,
+        5,
+        10
+      ]
+    },
+    "fakeRelief": {
+      "requiresOutcomeDefinitionId": "reliefFirstRebound",
+      "applicableHorizons": [
+        3,
+        5,
+        10
+      ],
+      "baseFirstPassageWindow": "t+1..t+h-1 inclusive",
+      "baseTargetHitSessionSymbol": "tau",
+      "observationWindow": "tau+1..min(tau+3,t+h) inclusive",
+      "target": {
+        "event": "episodeLow_break",
+        "formula": "L_s < episodeLow_t"
+      },
+      "competingTerminalEvent": {
+        "event": "relief_confirmation",
+        "formula": "the first completion of two consecutive sessions with L_s >= episodeLow_t and C_s >= midpointRecovery_t"
+      },
+      "firstPassageRule": "success when episodeLow_break occurs before relief_confirmation; failure when relief_confirmation occurs first or no episodeLow_break occurs by the observation-window end",
+      "sameSessionRule": "episodeLow_break takes precedence because L_s < episodeLow_t makes relief_confirmation false",
+      "requiresAtLeastOnePostReboundSession": true
+    }
+  },
+  "featureDefinitions": {
+    "common": {
+      "returnDefinition": "r_j = log(C_j / C_{j-1})",
+      "informationSet": "adjusted daily OHLCV through close_t only; no t+1 or later value is permitted",
+      "sessionIndexing": "all endpoints refer to ordered actual trading-session observations and are inclusive; no calendar-day interpolation",
+      "rollingValidity": "every observation required by a window must be finite and valid; partial-window calculation and synthetic filling are prohibited",
+      "medianDefinition": "for an even sample count, median is the arithmetic mean of the two central values after ascending sort",
+      "rollingWindows": {
+        "atr14": {
+          "endpoints": "TR_{t-13:t}",
+          "minimumPeriods": "14 valid true-range observations requiring OHLC_{t-13:t} and C_{t-14}"
+        },
+        "rv20": {
+          "endpoints": "r_{t-20:t-1}",
+          "minimumPeriods": "20 valid returns requiring C_{t-21:t-1}"
+        },
+        "previous20Extrema": {
+          "endpoints": "H_{t-20:t-1} or L_{t-20:t-1}",
+          "minimumPeriods": 20
+        },
+        "momentumAndReturnImpulse5": {
+          "endpoints": "C_{t-5} and C_t",
+          "minimumPeriods": "6 valid close observations from t-5 through t"
+        },
+        "returnAcceleration5": {
+          "endpoints": "r_t and r_{t-5:t-1}",
+          "minimumPeriods": "6 valid returns including r_t"
+        },
+        "drawdown3": {
+          "endpoints": "C_{t-3} and C_t",
+          "minimumPeriods": "4 valid close observations from t-3 through t"
+        },
+        "runup20": {
+          "endpoints": "C_{t-20} and C_t",
+          "minimumPeriods": "21 valid close observations from t-20 through t"
+        },
+        "profitTakingEligibility20": {
+          "endpoints": "C_{t-20}, C_t, and ATR14_t",
+          "minimumPeriods": "21 valid close observations plus a valid ATR14_t"
+        },
+        "volumeReference20": {
+          "endpoints": "V_{t-20:t-1} plus V_t",
+          "minimumPeriods": "20 valid reference volumes plus current volume"
+        },
+        "vwap20": {
+          "endpoints": "TP_j and V_j for j=t-19..t",
+          "minimumPeriods": 20
+        },
+        "vwapPersistence5": {
+          "endpoints": "j=t-4..t",
+          "minimumPeriods": "5 valid TP_j, V_j, and VWAP20_j observations"
+        },
+        "newLowCount5": {
+          "endpoints": "j=t-4..t",
+          "minimumPeriods": "5 valid L_j and lowPrev20_j observations"
+        },
+        "profitMass120": {
+          "endpoints": "j=t-119..t",
+          "minimumPeriods": 120
+        },
+        "rebound5": {
+          "endpoints": "L_{t-4:t} plus C_t",
+          "minimumPeriods": 5
+        },
+        "persistence3": {
+          "endpoints": "C_{t-2:t}",
+          "minimumPeriods": 3
+        },
+        "noNewLow2": {
+          "endpoints": "L_{t-1:t}",
+          "minimumPeriods": 2
+        },
+        "reliefSelloff6": {
+          "endpoints": "C_{t-5:t} and L_{t-5:t}",
+          "minimumPeriods": 6
+        },
+        "percentileTransform": {
+          "endpoints": "up to 252 sessions strictly before t",
+          "minimumPeriods": 60,
+          "maximumPeriods": 252
+        }
+      },
+      "volumeZeroSemantics": {
+        "observedZero": "V_j=0 is a valid observed volume and counts toward minimumPeriods",
+        "weightedTerm": "a zero-volume observation contributes zero numerator weight",
+        "ratioNumerator": "V_t=0 produces raw volume ratio 0 only when its reference median is positive",
+        "zeroMedian": "median(V_reference)=0 makes the volume-ratio feature missing",
+        "zeroSum": "sum(V_window)=0 makes every volume-weighted ratio or VWAP using that denominator missing",
+        "liquidityProxy": "V_t=0 makes abs(r_t)/(C_t*V_t) missing"
+      },
+      "zeroDenominator": "missing",
+      "insufficientLookback": "missing",
+      "zeroImputationAllowed": false
+    },
+    "trueRange": {
+      "symbol": "TR_t",
+      "formula": "max(H_t - L_t, abs(H_t - C_{t-1}), abs(L_t - C_{t-1}))",
+      "inputs": [
+        "H_t",
+        "L_t",
+        "C_{t-1}"
+      ],
+      "unit": "price",
+      "range": [
+        0,
+        "infinity"
+      ]
+    },
+    "atr14": {
+      "formula": "sum_{j=t-13}^{t}(TR_j) / 14",
+      "aggregation": "arithmetic_mean",
+      "windowEndpoints": "TR_{t-13:t} inclusive",
+      "minimumPeriods": 14,
+      "includesSignalSession": true,
+      "unit": "price",
+      "range": [
+        0,
+        "infinity"
+      ]
+    },
+    "rv20": {
+      "formula": "sqrt(sum_{j=t-20}^{t-1}((r_j - mean(r_{t-20:t-1}))^2) / 20)",
+      "aggregation": "population_standard_deviation",
+      "ddof": 0,
+      "windowEndpoints": "r_{t-20:t-1} inclusive",
+      "minimumPeriods": 20,
+      "includesSignalSessionReturn": false,
+      "unit": "dimensionless_log_return_volatility",
+      "range": [
+        0,
+        "infinity"
+      ]
+    },
+    "highPrev20": {
+      "formula": "max(H_{t-20:t-1})",
+      "windowEndpoints": "H_{t-20:t-1} inclusive",
+      "minimumPeriods": 20
+    },
+    "lowPrev20": {
+      "formula": "min(L_{t-20:t-1})",
+      "windowEndpoints": "L_{t-20:t-1} inclusive",
+      "minimumPeriods": 20
+    },
+    "momentum5": {
+      "formula": "log(C_t / C_{t-5})",
+      "inputs": [
+        "C_t",
+        "C_{t-5}"
+      ],
+      "inputAvailability": "through_close_t",
+      "unit": "dimensionless_log_return",
+      "rawRange": [
+        "-infinity",
+        "infinity"
+      ],
+      "transform": "protocol.percentile",
+      "range": [
+        0,
+        1
+      ]
+    },
+    "volume20": {
+      "equivalentTo": "volumeSurprise",
+      "rawFormula": "V_t / median(V_{t-20:t-1})",
+      "inputs": [
+        "V_t",
+        "V_{t-20:t-1}"
+      ],
+      "inputAvailability": "through_close_t",
+      "unit": "dimensionless_volume_ratio",
+      "rawRange": [
+        0,
+        "infinity"
+      ],
+      "transform": "protocol.percentile",
+      "range": [
+        0,
+        1
+      ]
+    },
+    "breakout20": {
+      "formula": "clip((C_t - highPrev20_t) / ATR14_t, 0, 1)",
+      "inputs": [
+        "C_t",
+        "highPrev20_t",
+        "ATR14_t"
+      ],
+      "inputAvailability": "through_close_t",
+      "unit": "dimensionless_atr_multiple",
+      "rawRange": [
+        "-infinity",
+        "infinity"
+      ],
+      "transform": "clip_0_1",
+      "range": [
+        0,
+        1
+      ]
+    },
+    "drawdown3": {
+      "equivalentTo": "downMoveImpulse",
+      "rawFormula": "max(-log(C_t / C_{t-3}), 0) / (RV20_t * sqrt(3))",
+      "inputs": [
+        "C_t",
+        "C_{t-3}",
+        "RV20_t"
+      ],
+      "inputAvailability": "through_close_t",
+      "unit": "dimensionless_volatility_scaled_return",
+      "rawRange": [
+        0,
+        "infinity"
+      ],
+      "transform": "protocol.percentile",
+      "range": [
+        0,
+        1
+      ]
+    },
+    "lowBreak20": {
+      "formula": "clip((lowPrev20_t - C_t) / ATR14_t, 0, 1)",
+      "inputs": [
+        "C_t",
+        "lowPrev20_t",
+        "ATR14_t"
+      ],
+      "inputAvailability": "through_close_t",
+      "unit": "dimensionless_atr_multiple",
+      "rawRange": [
+        "-infinity",
+        "infinity"
+      ],
+      "transform": "clip_0_1",
+      "range": [
+        0,
+        1
+      ]
+    },
+    "runup20": {
+      "formula": "clip((C_t / C_{t-20} - 1) / (2 * ATR14_t / C_t), 0, 1)",
+      "inputs": [
+        "C_t",
+        "C_{t-20}",
+        "ATR14_t"
+      ],
+      "inputAvailability": "through_close_t",
+      "unit": "dimensionless_two_atr_runup_ratio",
+      "rawRange": [
+        "-infinity",
+        "infinity"
+      ],
+      "transform": "clip_0_1",
+      "range": [
+        0,
+        1
+      ]
+    },
+    "returnImpulse": {
+      "formula": "max(log(C_t / C_{t-5}), 0) / (RV20_t * sqrt(5))",
+      "transform": "protocol.percentile",
+      "range": [
+        0,
+        1
+      ]
+    },
+    "returnAccel": {
+      "formula": "max(r_t - mean(r_{t-5:t-1}), 0) / RV20_t",
+      "transform": "protocol.percentile",
+      "range": [
+        0,
+        1
+      ]
+    },
+    "volumeSurprise": {
+      "rawFormula": "V_t / median(V_{t-20:t-1})",
+      "transform": "protocol.percentile",
+      "range": [
+        0,
+        1
+      ]
+    },
+    "rangeChase": {
+      "formula": "0.6 * clip((C_t - lowPrev20_t) / (highPrev20_t - lowPrev20_t), 0, 1) + 0.4 * clip((C_t - highPrev20_t) / ATR14_t, 0, 1)",
+      "transform": "identity",
+      "range": [
+        0,
+        1
+      ]
+    },
+    "typicalPrice": {
+      "symbol": "TP_t",
+      "formula": "(H_t + L_t + C_t) / 3"
+    },
+    "vwap20": {
+      "formula": "sum_{j=t-19}^{t}(TP_j * V_j) / sum_{j=t-19}^{t}(V_j)"
+    },
+    "vwapPersistenceProxy": {
+      "formula": "sum_{j=t-4}^{t}(V_j * I(TP_j > VWAP20_j)) / sum_{j=t-4}^{t}(V_j)",
+      "transform": "identity",
+      "range": [
+        0,
+        1
+      ]
+    },
+    "pullbackHold": {
+      "formula": "1 - clip((highPrev20_t - C_t) / ATR14_t, 0, 1)",
+      "transform": "identity",
+      "range": [
+        0,
+        1
+      ]
+    },
+    "downMoveImpulse": {
+      "formula": "max(-log(C_t / C_{t-3}), 0) / (RV20_t * sqrt(3))",
+      "transform": "protocol.percentile",
+      "range": [
+        0,
+        1
+      ]
+    },
+    "vwapDownPressure": {
+      "formula": "0.5 * clip((VWAP20_t - C_t) / ATR14_t, 0, 1) + 0.5 * (sum_{j=t-4}^{t}(V_j * I(TP_j < VWAP20_j)) / sum_{j=t-4}^{t}(V_j))",
+      "transform": "identity",
+      "range": [
+        0,
+        1
+      ]
+    },
+    "newLowCount5": {
+      "formula": "sum_{j=t-4}^{t}(I(L_j < lowPrev20_j))"
+    },
+    "breakdownCascade": {
+      "formula": "0.6 * clip((lowPrev20_t - C_t) / ATR14_t, 0, 1) + 0.4 * percentile(newLowCount5_t)",
+      "transform": "identity",
+      "range": [
+        0,
+        1
+      ]
+    },
+    "liquidityProxy": {
+      "rawFormula": "abs(r_t) / (C_t * V_t)",
+      "transform": "protocol.percentile",
+      "range": [
+        0,
+        1
+      ]
+    },
+    "potentialPtpProxy": {
+      "windowSessions": 120,
+      "volumeWeight": "raw"
+    },
+    "profitBreadth": {
+      "formula": "sum_{j=t-119}^{t}(V_j * I(TP_j < C_t)) / sum_{j=t-119}^{t}(V_j)",
+      "transform": "identity",
+      "range": [
+        0,
+        1
+      ]
+    },
+    "profitGainMass": {
+      "formula": "clip(sum_{j=t-119}^{t}(V_j * max(C_t - TP_j, 0)) / (sum_{j=t-119}^{t}(V_j) * ATR14_t), 0, 1)",
+      "transform": "identity",
+      "range": [
+        0,
+        1
+      ]
+    },
+    "vwapExtension": {
+      "formula": "clip((C_t - VWAP20_t) / ATR14_t, 0, 1)",
+      "transform": "identity",
+      "range": [
+        0,
+        1
+      ]
+    },
+    "rebound": {
+      "formula": "clip((C_t - min(L_{t-4:t})) / ATR14_t, 0, 1)",
+      "inputs": [
+        "C_t",
+        "L_{t-4:t}",
+        "ATR14_t"
+      ],
+      "inputAvailability": "through_close_t",
+      "unit": "dimensionless_atr_multiple",
+      "rawRange": [
+        0,
+        "infinity"
+      ],
+      "transform": "clip_0_1",
+      "range": [
+        0,
+        1
+      ]
+    },
+    "persistence": {
+      "formula": "I(C_t > C_{t-1} and C_{t-1} > C_{t-2})",
+      "inputs": [
+        "C_t",
+        "C_{t-1}",
+        "C_{t-2}"
+      ],
+      "inputAvailability": "through_close_t",
+      "unit": "binary_indicator",
+      "rawRange": [
+        0,
+        1
+      ],
+      "transform": "identity",
+      "range": [
+        0,
+        1
+      ]
+    },
+    "noNewLow": {
+      "formula": "I(L_t >= L_{t-1})",
+      "inputs": [
+        "L_t",
+        "L_{t-1}"
+      ],
+      "inputAvailability": "through_close_t",
+      "unit": "binary_indicator",
+      "rawRange": [
+        0,
+        1
+      ],
+      "transform": "identity",
+      "range": [
+        0,
+        1
+      ]
+    },
+    "single_session_rebound": {
+      "lowerWickFormula": "(C_t - L_t) / (H_t - L_t)",
+      "lowerWickMissingWhen": "H_t = L_t",
+      "reboundFeatureDefinitionId": "rebound",
+      "formula": "0.5 * lowerWick_t + 0.5 * rebound_t",
+      "transform": "identity",
+      "range": [
+        0,
+        1
+      ]
+    },
+    "two_session_persistence_and_no_new_low": {
+      "originalFeatureDefinitionId": "single_session_rebound",
+      "gateFeatureDefinitionIds": [
+        "persistence",
+        "noNewLow"
+      ],
+      "gateFormula": "persistence_t * noNewLow_t",
+      "formula": "single_session_rebound_t * persistence_t * noNewLow_t",
+      "transform": "identity",
+      "range": [
+        0,
+        1
+      ]
+    }
+  },
+  "candidateFamilies": [
+    {
+      "id": "fomo",
+      "components": [
+        "returnImpulse",
+        "returnAccel",
+        "volumeSurprise",
+        "rangeChase",
+        "vwapPersistenceProxy",
+        "pullbackHold"
+      ],
+      "candidates": [
+        {
+          "id": "fomo.documented",
+          "kind": "composite",
+          "outcomeDefinitionId": "fomoContinuation",
+          "outcomeDefinitionIds": [
+            "fomoContinuation",
+            "fomoExhaustion"
+          ],
+          "applicableHorizons": [
+            1,
+            3,
+            5,
+            10
+          ],
+          "weights": {
+            "returnImpulse": 0.24,
+            "returnAccel": 0.16,
+            "volumeSurprise": 0.22,
+            "rangeChase": 0.16,
+            "vwapPersistenceProxy": 0.14,
+            "pullbackHold": 0.08
+          }
+        },
+        {
+          "id": "fomo.equal",
+          "kind": "composite",
+          "outcomeDefinitionId": "fomoContinuation",
+          "outcomeDefinitionIds": [
+            "fomoContinuation",
+            "fomoExhaustion"
+          ],
+          "applicableHorizons": [
+            1,
+            3,
+            5,
+            10
+          ],
+          "weights": {
+            "returnImpulse": 0.16666666666666666,
+            "returnAccel": 0.16666666666666666,
+            "volumeSurprise": 0.16666666666666666,
+            "rangeChase": 0.16666666666666666,
+            "vwapPersistenceProxy": 0.16666666666666666,
+            "pullbackHold": 0.16666666666666666
+          }
+        },
+        {
+          "id": "fomo.deduplicated",
+          "kind": "composite",
+          "outcomeDefinitionId": "fomoContinuation",
+          "outcomeDefinitionIds": [
+            "fomoContinuation",
+            "fomoExhaustion"
+          ],
+          "applicableHorizons": [
+            1,
+            3,
+            5,
+            10
+          ],
+          "weights": {
+            "returnImpulse": 0.3,
+            "returnAccel": 0.1,
+            "volumeSurprise": 0.25,
+            "rangeChase": 0.15,
+            "vwapPersistenceProxy": 0.1,
+            "pullbackHold": 0.1
+          }
+        },
+        {
+          "id": "fomo.baseline.momentum5",
+          "kind": "baseline",
+          "outcomeDefinitionId": "fomoContinuation",
+          "outcomeDefinitionIds": [
+            "fomoContinuation",
+            "fomoExhaustion"
+          ],
+          "applicableHorizons": [
+            1,
+            3,
+            5,
+            10
+          ],
+          "formula": "momentum5"
+        },
+        {
+          "id": "fomo.baseline.volume20",
+          "kind": "baseline",
+          "outcomeDefinitionId": "fomoContinuation",
+          "outcomeDefinitionIds": [
+            "fomoContinuation",
+            "fomoExhaustion"
+          ],
+          "applicableHorizons": [
+            1,
+            3,
+            5,
+            10
+          ],
+          "formula": "volume20"
+        },
+        {
+          "id": "fomo.baseline.breakout20",
+          "kind": "baseline",
+          "outcomeDefinitionId": "fomoContinuation",
+          "outcomeDefinitionIds": [
+            "fomoContinuation",
+            "fomoExhaustion"
+          ],
+          "applicableHorizons": [
+            1,
+            3,
+            5,
+            10
+          ],
+          "formula": "breakout20"
+        }
+      ]
+    },
+    {
+      "id": "panic",
+      "components": [
+        "downMoveImpulse",
+        "volumeSurprise",
+        "vwapDownPressure",
+        "breakdownCascade",
+        "liquidityProxy"
+      ],
+      "candidates": [
+        {
+          "id": "panic.documented",
+          "kind": "composite",
+          "outcomeDefinitionId": "panicContinuation",
+          "outcomeDefinitionIds": [
+            "panicOnset",
+            "panicContinuation"
+          ],
+          "applicableHorizons": [
+            1,
+            3,
+            5,
+            10
+          ],
+          "weights": {
+            "downMoveImpulse": 0.3,
+            "volumeSurprise": 0.25,
+            "vwapDownPressure": 0.2,
+            "breakdownCascade": 0.15,
+            "liquidityProxy": 0.1
+          }
+        },
+        {
+          "id": "panic.equal",
+          "kind": "composite",
+          "outcomeDefinitionId": "panicContinuation",
+          "outcomeDefinitionIds": [
+            "panicOnset",
+            "panicContinuation"
+          ],
+          "applicableHorizons": [
+            1,
+            3,
+            5,
+            10
+          ],
+          "weights": {
+            "downMoveImpulse": 0.2,
+            "volumeSurprise": 0.2,
+            "vwapDownPressure": 0.2,
+            "breakdownCascade": 0.2,
+            "liquidityProxy": 0.2
+          }
+        },
+        {
+          "id": "panic.deduplicated",
+          "kind": "composite",
+          "outcomeDefinitionId": "panicContinuation",
+          "outcomeDefinitionIds": [
+            "panicOnset",
+            "panicContinuation"
+          ],
+          "applicableHorizons": [
+            1,
+            3,
+            5,
+            10
+          ],
+          "weights": {
+            "downMoveImpulse": 0.3,
+            "volumeSurprise": 0.25,
+            "vwapDownPressure": 0.2,
+            "breakdownCascade": 0.1,
+            "liquidityProxy": 0.15
+          }
+        },
+        {
+          "id": "panic.baseline.drawdown3",
+          "kind": "baseline",
+          "outcomeDefinitionId": "panicContinuation",
+          "outcomeDefinitionIds": [
+            "panicOnset",
+            "panicContinuation"
+          ],
+          "applicableHorizons": [
+            1,
+            3,
+            5,
+            10
+          ],
+          "formula": "drawdown3"
+        },
+        {
+          "id": "panic.baseline.volume20",
+          "kind": "baseline",
+          "outcomeDefinitionId": "panicContinuation",
+          "outcomeDefinitionIds": [
+            "panicOnset",
+            "panicContinuation"
+          ],
+          "applicableHorizons": [
+            1,
+            3,
+            5,
+            10
+          ],
+          "formula": "volume20"
+        },
+        {
+          "id": "panic.baseline.lowBreak20",
+          "kind": "baseline",
+          "outcomeDefinitionId": "panicContinuation",
+          "outcomeDefinitionIds": [
+            "panicOnset",
+            "panicContinuation"
+          ],
+          "applicableHorizons": [
+            1,
+            3,
+            5,
+            10
+          ],
+          "formula": "lowBreak20"
+        }
+      ]
+    },
+    {
+      "id": "potentialPtp",
+      "components": [
+        "profitBreadth",
+        "profitGainMass",
+        "vwapExtension"
+      ],
+      "candidates": [
+        {
+          "id": "potentialPtp.documented",
+          "kind": "composite",
+          "outcomeDefinitionId": "profitTakingLike",
+          "outcomeDefinitionIds": [
+            "profitTakingLike"
+          ],
+          "applicableHorizons": [
+            1,
+            3,
+            5,
+            10
+          ],
+          "weights": {
+            "profitBreadth": 0.45,
+            "profitGainMass": 0.35,
+            "vwapExtension": 0.2
+          }
+        },
+        {
+          "id": "potentialPtp.equal",
+          "kind": "composite",
+          "outcomeDefinitionId": "profitTakingLike",
+          "outcomeDefinitionIds": [
+            "profitTakingLike"
+          ],
+          "applicableHorizons": [
+            1,
+            3,
+            5,
+            10
+          ],
+          "weights": {
+            "profitBreadth": 0.3333333333333333,
+            "profitGainMass": 0.3333333333333333,
+            "vwapExtension": 0.3333333333333333
+          }
+        },
+        {
+          "id": "potentialPtp.breadth",
+          "kind": "composite",
+          "outcomeDefinitionId": "profitTakingLike",
+          "outcomeDefinitionIds": [
+            "profitTakingLike"
+          ],
+          "applicableHorizons": [
+            1,
+            3,
+            5,
+            10
+          ],
+          "weights": {
+            "profitBreadth": 0.5,
+            "profitGainMass": 0.3,
+            "vwapExtension": 0.2
+          }
+        },
+        {
+          "id": "potentialPtp.baseline.runup20",
+          "kind": "baseline",
+          "outcomeDefinitionId": "profitTakingLike",
+          "outcomeDefinitionIds": [
+            "profitTakingLike"
+          ],
+          "applicableHorizons": [
+            1,
+            3,
+            5,
+            10
+          ],
+          "formula": "runup20"
+        },
+        {
+          "id": "potentialPtp.baseline.vwapExtension",
+          "kind": "baseline",
+          "outcomeDefinitionId": "profitTakingLike",
+          "outcomeDefinitionIds": [
+            "profitTakingLike"
+          ],
+          "applicableHorizons": [
+            1,
+            3,
+            5,
+            10
+          ],
+          "formula": "vwapExtension"
+        }
+      ]
+    },
+    {
+      "id": "relief",
+      "components": [
+        "rebound",
+        "persistence",
+        "noNewLow"
+      ],
+      "candidates": [
+        {
+          "id": "relief.originalProxy",
+          "kind": "proxy",
+          "outcomeDefinitionId": "reliefFirstRebound",
+          "outcomeDefinitionIds": [
+            "reliefFirstRebound",
+            "fakeRelief"
+          ],
+          "outcomeApplicableHorizons": {
+            "reliefFirstRebound": [
+              1,
+              3,
+              5,
+              10
+            ],
+            "fakeRelief": [
+              3,
+              5,
+              10
+            ]
+          },
+          "applicableHorizons": [
+            1,
+            3,
+            5,
+            10
+          ],
+          "source": "documented",
+          "formula": "single_session_rebound"
+        },
+        {
+          "id": "relief.persistenceGated",
+          "kind": "repaired",
+          "outcomeDefinitionId": "reliefConfirmed",
+          "outcomeDefinitionIds": [
+            "reliefConfirmed",
+            "fakeRelief"
+          ],
+          "outcomeApplicableHorizons": {
+            "reliefConfirmed": [
+              3,
+              5,
+              10
+            ],
+            "fakeRelief": [
+              3,
+              5,
+              10
+            ]
+          },
+          "applicableHorizons": [
+            3,
+            5,
+            10
+          ],
+          "repair": "persistence_gated",
+          "formula": "two_session_persistence_and_no_new_low"
+        }
+      ]
+    }
+  ],
+  "identifiability": {
+    "missingPolicy": "no_zero_imputation",
+    "exactFlowCandidates": [
+      {
+        "id": "panic.earlyRiskExactFlow",
+        "dataAvailability": "not_identifiable",
+        "missingInputs": [
+          "historical_bid_cancellations",
+          "historical_depth",
+          "historical_spread",
+          "historical_order_flow_imbalance"
+        ]
+      },
+      {
+        "id": "panic.reliefExactFlow",
+        "dataAvailability": "not_identifiable",
+        "missingInputs": [
+          "historical_aggressor_side",
+          "historical_order_flow_imbalance"
+        ]
+      },
+      {
+        "id": "potentialPtp.realizedExactFlow",
+        "dataAvailability": "not_identifiable",
+        "missingInputs": [
+          "historical_aggressor_side",
+          "historical_order_flow_imbalance"
+        ]
+      }
+    ]
+  },
+  "selection": {
+    "primaryOutcome": "panicContinuation@5",
+    "primaryOutcomeRole": "single overall confirmatory conclusion used for Holm-adjusted primary reporting; it does not replace per-trial candidate selection",
+    "candidateSelectionUnit": "family_x_outcome_x_horizon",
+    "candidateSelectionScope": "apply primaryMetric separately within every applicable family, outcomeDefinitionId, and horizon on TSLA",
+    "primaryMetric": {
+      "id": "BrierScore",
+      "formula": "sum_i(eventWeight_i * (p_i - y_i)^2) / sum_i(eventWeight_i)",
+      "probabilitySource": "protocol.probabilityCalibration.testApplication.probabilitySource",
+      "direction": "lower_is_better",
+      "evaluationData": "TSLA out-of-sample walk-forward predictions only",
+      "thresholdDependent": false
+    },
+    "baselineDifferenceMetric": {
+      "id": "BrierDifference",
+      "formula": "BrierScore_comparator - BrierScore_candidate",
+      "direction": "higher_is_better",
+      "comparisonSample": "paired test observations with a valid binary label and valid probabilities from both candidate and comparator",
+      "comparatorSet": "train-only Jeffreys base-rate comparator plus every declared family formula comparator applicable to the same outcome and horizon",
+      "strongestComparator": "the comparator with the lowest out-of-sample BrierScore",
+      "winCriterion": "paired moving-block bootstrap 95% confidence interval lower bound > 0 against the strongest comparator"
+    },
+    "secondaryOutcomes": {
+      "scope": "all_families_and_horizons",
+      "families": [
+        "fomo",
+        "panic",
+        "potentialPtp",
+        "relief"
+      ],
+      "horizons": [
+        1,
+        3,
+        5,
+        10
+      ]
+    },
+    "sequence": [
+      {
+        "order": 1,
+        "symbols": [
+          "TSLA"
+        ],
+        "purpose": "candidate_selection"
+      },
+      {
+        "order": 2,
+        "symbols": [
+          "NVDA"
+        ],
+        "purpose": "external_replication"
+      },
+      {
+        "order": 3,
+        "symbols": [
+          "MU",
+          "000660"
+        ],
+        "purpose": "holdout"
+      }
+    ],
+    "sequenceLock": "NVDA replication and MU/000660 holdout results cannot change the candidate selected on TSLA",
+    "baselineComparator": {
+      "trainBaseRate": "protocol.probabilityCalibration.trainBaseRateComparator",
+      "fomo": "lowest-Brier candidate whose kind is baseline within the same outcome and horizon",
+      "panic": "lowest-Brier candidate whose kind is baseline within the same outcome and horizon",
+      "potentialPtp": "lowest-Brier candidate whose kind is baseline within the same outcome and horizon",
+      "relief": "relief.originalProxy for shared applicable outcomes and horizons"
+    },
+    "baselineWinRequirement": {
+      "rule": "a non-baseline candidate is retained only when baselineDifferenceMetric.winCriterion is met against its family comparator",
+      "failureDisposition": "no_valid_formula_for_that_family_outcome_horizon"
+    },
+    "uncertaintySet": "two candidates are statistically indistinguishable when the paired moving-block bootstrap 95% confidence interval for their BrierScore difference includes 0",
+    "candidateComplexityTuple": {
+      "fields": [
+        "effectiveInputCount",
+        "nonlinearGateCount"
+      ],
+      "comparison": "lexicographic_ascending",
+      "valuesFrozenBeforeMarketData": true
+    },
+    "candidateComplexity": {
+      "fomo.baseline.breakout20": {
+        "effectiveInputCount": 1,
+        "nonlinearGateCount": 0,
+        "tuple": [
+          1,
+          0
+        ]
+      },
+      "fomo.baseline.momentum5": {
+        "effectiveInputCount": 1,
+        "nonlinearGateCount": 0,
+        "tuple": [
+          1,
+          0
+        ]
+      },
+      "fomo.baseline.volume20": {
+        "effectiveInputCount": 1,
+        "nonlinearGateCount": 0,
+        "tuple": [
+          1,
+          0
+        ]
+      },
+      "fomo.deduplicated": {
+        "effectiveInputCount": 6,
+        "nonlinearGateCount": 0,
+        "tuple": [
+          6,
+          0
+        ]
+      },
+      "fomo.documented": {
+        "effectiveInputCount": 6,
+        "nonlinearGateCount": 0,
+        "tuple": [
+          6,
+          0
+        ]
+      },
+      "fomo.equal": {
+        "effectiveInputCount": 6,
+        "nonlinearGateCount": 0,
+        "tuple": [
+          6,
+          0
+        ]
+      },
+      "panic.baseline.drawdown3": {
+        "effectiveInputCount": 1,
+        "nonlinearGateCount": 0,
+        "tuple": [
+          1,
+          0
+        ]
+      },
+      "panic.baseline.lowBreak20": {
+        "effectiveInputCount": 1,
+        "nonlinearGateCount": 0,
+        "tuple": [
+          1,
+          0
+        ]
+      },
+      "panic.baseline.volume20": {
+        "effectiveInputCount": 1,
+        "nonlinearGateCount": 0,
+        "tuple": [
+          1,
+          0
+        ]
+      },
+      "panic.deduplicated": {
+        "effectiveInputCount": 5,
+        "nonlinearGateCount": 0,
+        "tuple": [
+          5,
+          0
+        ]
+      },
+      "panic.documented": {
+        "effectiveInputCount": 5,
+        "nonlinearGateCount": 0,
+        "tuple": [
+          5,
+          0
+        ]
+      },
+      "panic.equal": {
+        "effectiveInputCount": 5,
+        "nonlinearGateCount": 0,
+        "tuple": [
+          5,
+          0
+        ]
+      },
+      "potentialPtp.baseline.runup20": {
+        "effectiveInputCount": 1,
+        "nonlinearGateCount": 0,
+        "tuple": [
+          1,
+          0
+        ]
+      },
+      "potentialPtp.baseline.vwapExtension": {
+        "effectiveInputCount": 1,
+        "nonlinearGateCount": 0,
+        "tuple": [
+          1,
+          0
+        ]
+      },
+      "potentialPtp.breadth": {
+        "effectiveInputCount": 3,
+        "nonlinearGateCount": 0,
+        "tuple": [
+          3,
+          0
+        ]
+      },
+      "potentialPtp.documented": {
+        "effectiveInputCount": 3,
+        "nonlinearGateCount": 0,
+        "tuple": [
+          3,
+          0
+        ]
+      },
+      "potentialPtp.equal": {
+        "effectiveInputCount": 3,
+        "nonlinearGateCount": 0,
+        "tuple": [
+          3,
+          0
+        ]
+      },
+      "relief.originalProxy": {
+        "effectiveInputCount": 2,
+        "nonlinearGateCount": 0,
+        "tuple": [
+          2,
+          0
+        ]
+      },
+      "relief.persistenceGated": {
+        "effectiveInputCount": 4,
+        "nonlinearGateCount": 1,
+        "tuple": [
+          4,
+          1
+        ]
+      }
+    },
+    "tieBreakHierarchy": [
+      {
+        "order": 1,
+        "criterion": "primaryMetric",
+        "direction": "lower"
+      },
+      {
+        "order": 2,
+        "criterion": "candidateComplexityTuple",
+        "direction": "lexicographic_ascending"
+      },
+      {
+        "order": 3,
+        "criterion": "candidateId",
+        "direction": "lexicographic_ascending"
+      }
+    ],
+    "numericTieTolerance": 1e-12,
+    "testThresholdPolicy": "no_threshold_change"
+  }
+}

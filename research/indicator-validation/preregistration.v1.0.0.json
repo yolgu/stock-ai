@@ -1,0 +1,403 @@
+{
+  "research": {
+    "id": "mania-indicator-validation",
+    "version": "1.0.0",
+    "status": "frozen",
+    "frozenAt": "2026-07-10",
+    "dataCutoff": "2026-07-09",
+    "seed": 20260710
+  },
+  "data": {
+    "symbols": [
+      {
+        "symbol": "TSLA",
+        "role": "candidate_selection"
+      },
+      {
+        "symbol": "NVDA",
+        "role": "external_replication"
+      },
+      {
+        "symbol": "MU",
+        "role": "holdout"
+      },
+      {
+        "symbol": "000660",
+        "role": "holdout"
+      }
+    ],
+    "request": {
+      "coverage": "full_available",
+      "startDate": "1900-01-01",
+      "endDate": "2026-07-09",
+      "interval": "1d",
+      "adjusted": true,
+      "completedCandlesOnly": true
+    }
+  },
+  "anchors": [
+    {
+      "id": "tsla-2020-q2-earnings-next-session",
+      "symbol": "TSLA",
+      "date": "2020-07-23",
+      "event": "2020 Q2 earnings",
+      "timing": "next_session",
+      "role": "primary"
+    },
+    {
+      "id": "nvda-fy2024-q1-earnings-next-session",
+      "symbol": "NVDA",
+      "date": "2023-05-25",
+      "event": "FY2024 Q1 earnings and guidance",
+      "timing": "next_session",
+      "role": "primary"
+    },
+    {
+      "id": "tsla-five-for-one-split-next-session",
+      "symbol": "TSLA",
+      "date": "2020-08-12",
+      "event": "five-for-one stock split announcement",
+      "timing": "next_session",
+      "role": "sensitivity"
+    }
+  ],
+  "windows": {
+    "anchored": {
+      "sessions": 360,
+      "blockSessions": 120,
+      "blockCount": 3
+    },
+    "current": {
+      "symbols": [
+        "MU",
+        "000660"
+      ],
+      "lastSessions": 120,
+      "fourMonthInterim": {
+        "startDate": "2026-03-10",
+        "endDate": "2026-07-09"
+      }
+    }
+  },
+  "validation": {
+    "blockSessions": 120,
+    "maniaSessions": 360,
+    "recentFourMonth": {
+      "startDate": "2026-03-10",
+      "endDate": "2026-07-09",
+      "status": "interim"
+    },
+    "horizons": [
+      1,
+      3,
+      5,
+      10
+    ],
+    "percentile": {
+      "method": "expanding",
+      "fit": "train_only",
+      "minSessions": 60,
+      "maxSessions": 252
+    },
+    "threshold": {
+      "fit": "train_only",
+      "quantile": 0.8
+    },
+    "purgeSessions": 10,
+    "embargoSessions": 10,
+    "cooldownByHorizon": true,
+    "minEvents": 30,
+    "bootstrap": {
+      "method": "moving_block",
+      "blockLengths": [
+        5,
+        10,
+        20
+      ],
+      "repetitions": 2000,
+      "seed": 20260710
+    },
+    "posterior": {
+      "prior": "Jeffreys",
+      "distribution": "beta",
+      "alpha": 0.5,
+      "beta": 0.5
+    },
+    "corrections": [
+      "BH",
+      "Holm"
+    ],
+    "testTuningAllowed": false
+  },
+  "candidateFamilies": [
+    {
+      "id": "fomo",
+      "components": [
+        "returnImpulse",
+        "returnAccel",
+        "volumeSurprise",
+        "rangeChase",
+        "vwapPersistenceProxy",
+        "pullbackHold"
+      ],
+      "candidates": [
+        {
+          "id": "fomo.documented",
+          "kind": "composite",
+          "weights": {
+            "returnImpulse": 0.24,
+            "returnAccel": 0.16,
+            "volumeSurprise": 0.22,
+            "rangeChase": 0.16,
+            "vwapPersistenceProxy": 0.14,
+            "pullbackHold": 0.08
+          }
+        },
+        {
+          "id": "fomo.equal",
+          "kind": "composite",
+          "weights": {
+            "returnImpulse": 0.16666666666666666,
+            "returnAccel": 0.16666666666666666,
+            "volumeSurprise": 0.16666666666666666,
+            "rangeChase": 0.16666666666666666,
+            "vwapPersistenceProxy": 0.16666666666666666,
+            "pullbackHold": 0.16666666666666666
+          }
+        },
+        {
+          "id": "fomo.deduplicated",
+          "kind": "composite",
+          "weights": {
+            "returnImpulse": 0.3,
+            "returnAccel": 0.1,
+            "volumeSurprise": 0.25,
+            "rangeChase": 0.15,
+            "vwapPersistenceProxy": 0.1,
+            "pullbackHold": 0.1
+          }
+        },
+        {
+          "id": "fomo.baseline.momentum5",
+          "kind": "baseline",
+          "formula": "momentum5"
+        },
+        {
+          "id": "fomo.baseline.volume20",
+          "kind": "baseline",
+          "formula": "volume20"
+        },
+        {
+          "id": "fomo.baseline.breakout20",
+          "kind": "baseline",
+          "formula": "breakout20"
+        }
+      ]
+    },
+    {
+      "id": "panic",
+      "components": [
+        "downMoveImpulse",
+        "volumeSurprise",
+        "vwapDownPressure",
+        "breakdownCascade",
+        "liquidityProxy"
+      ],
+      "candidates": [
+        {
+          "id": "panic.documented",
+          "kind": "composite",
+          "weights": {
+            "downMoveImpulse": 0.3,
+            "volumeSurprise": 0.25,
+            "vwapDownPressure": 0.2,
+            "breakdownCascade": 0.15,
+            "liquidityProxy": 0.1
+          }
+        },
+        {
+          "id": "panic.equal",
+          "kind": "composite",
+          "weights": {
+            "downMoveImpulse": 0.2,
+            "volumeSurprise": 0.2,
+            "vwapDownPressure": 0.2,
+            "breakdownCascade": 0.2,
+            "liquidityProxy": 0.2
+          }
+        },
+        {
+          "id": "panic.deduplicated",
+          "kind": "composite",
+          "weights": {
+            "downMoveImpulse": 0.3,
+            "volumeSurprise": 0.25,
+            "vwapDownPressure": 0.2,
+            "breakdownCascade": 0.1,
+            "liquidityProxy": 0.15
+          }
+        },
+        {
+          "id": "panic.baseline.drawdown3",
+          "kind": "baseline",
+          "formula": "drawdown3"
+        },
+        {
+          "id": "panic.baseline.volume20",
+          "kind": "baseline",
+          "formula": "volume20"
+        },
+        {
+          "id": "panic.baseline.lowBreak20",
+          "kind": "baseline",
+          "formula": "lowBreak20"
+        }
+      ]
+    },
+    {
+      "id": "potentialPtp",
+      "components": [
+        "profitBreadth",
+        "profitGainMass",
+        "vwapExtension"
+      ],
+      "candidates": [
+        {
+          "id": "potentialPtp.documented",
+          "kind": "composite",
+          "weights": {
+            "profitBreadth": 0.45,
+            "profitGainMass": 0.35,
+            "vwapExtension": 0.2
+          }
+        },
+        {
+          "id": "potentialPtp.equal",
+          "kind": "composite",
+          "weights": {
+            "profitBreadth": 0.3333333333333333,
+            "profitGainMass": 0.3333333333333333,
+            "vwapExtension": 0.3333333333333333
+          }
+        },
+        {
+          "id": "potentialPtp.breadth",
+          "kind": "composite",
+          "weights": {
+            "profitBreadth": 0.5,
+            "profitGainMass": 0.3,
+            "vwapExtension": 0.2
+          }
+        },
+        {
+          "id": "potentialPtp.baseline.runup20",
+          "kind": "baseline",
+          "formula": "runup20"
+        },
+        {
+          "id": "potentialPtp.baseline.vwapExtension",
+          "kind": "baseline",
+          "formula": "vwapExtension"
+        }
+      ]
+    },
+    {
+      "id": "relief",
+      "components": [
+        "rebound",
+        "persistence",
+        "noNewLow"
+      ],
+      "candidates": [
+        {
+          "id": "relief.originalProxy",
+          "kind": "proxy",
+          "source": "documented",
+          "formula": "single_session_rebound"
+        },
+        {
+          "id": "relief.persistenceGated",
+          "kind": "repaired",
+          "repair": "persistence_gated",
+          "formula": "two_session_persistence_and_no_new_low"
+        }
+      ]
+    }
+  ],
+  "identifiability": {
+    "missingPolicy": "no_zero_imputation",
+    "exactFlowCandidates": [
+      {
+        "id": "panic.earlyRiskExactFlow",
+        "dataAvailability": "not_identifiable",
+        "missingInputs": [
+          "historical_bid_cancellations",
+          "historical_depth",
+          "historical_spread",
+          "historical_order_flow_imbalance"
+        ]
+      },
+      {
+        "id": "panic.reliefExactFlow",
+        "dataAvailability": "not_identifiable",
+        "missingInputs": [
+          "historical_aggressor_side",
+          "historical_order_flow_imbalance"
+        ]
+      },
+      {
+        "id": "potentialPtp.realizedExactFlow",
+        "dataAvailability": "not_identifiable",
+        "missingInputs": [
+          "historical_aggressor_side",
+          "historical_order_flow_imbalance"
+        ]
+      }
+    ]
+  },
+  "selection": {
+    "primaryOutcome": "panicContinuation@5",
+    "secondaryOutcomes": {
+      "scope": "all_families_and_horizons",
+      "families": [
+        "fomo",
+        "panic",
+        "potentialPtp",
+        "relief"
+      ],
+      "horizons": [
+        1,
+        3,
+        5,
+        10
+      ]
+    },
+    "sequence": [
+      {
+        "order": 1,
+        "symbols": [
+          "TSLA"
+        ],
+        "purpose": "candidate_selection"
+      },
+      {
+        "order": 2,
+        "symbols": [
+          "NVDA"
+        ],
+        "purpose": "external_replication"
+      },
+      {
+        "order": 3,
+        "symbols": [
+          "MU",
+          "000660"
+        ],
+        "purpose": "holdout"
+      }
+    ],
+    "tieOrUncertaintyRule": "choose_simpler_candidate",
+    "baselineWinRequirement": "reject_candidate_if_no_baseline_win",
+    "testThresholdPolicy": "no_threshold_change"
+  }
+}

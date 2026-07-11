@@ -1,0 +1,17 @@
+{
+  "schemaVersion": "research-object.v1",
+  "id": "DC-001",
+  "type": "DatasetContract",
+  "title": "상태 온톨로지 1차 문헌 근거 계약",
+  "version": "1.0.1",
+  "lifecycleState": "completed",
+  "evidenceLevel": "conceptual",
+  "purpose": "ST-ONT-001의 구성타당도·행동측정·잠재상태 식별·미시구조 명칭한계에 적용할 14개 1차 문헌과 비적용 범위를 고정한다.",
+  "dependsOn": [
+    "RQ-001"
+  ],
+  "artifacts": [
+    "research/meta-research/objects/dataset-contracts/DC-001-ontology-evidence/data-contract.md",
+    "research/meta-research/objects/dataset-contracts/DC-001-ontology-evidence/source-register.json"
+  ]
+}

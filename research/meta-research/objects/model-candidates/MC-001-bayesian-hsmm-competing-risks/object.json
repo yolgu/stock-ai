@@ -1,0 +1,18 @@
+{
+  "schemaVersion": "research-object.v1",
+  "id": "MC-001",
+  "type": "ModelCandidate",
+  "title": "계층 Bayesian HSMM·경쟁위험 후보",
+  "version": "1.0.0",
+  "lifecycleState": "proposed",
+  "evidenceLevel": "conceptual",
+  "purpose": "상태 지속시간·심볼 이질성·상호 경쟁 사건·판정보류를 다룰 후속 모형 후보를 보존한다.",
+  "dependsOn": [
+    "RB-001"
+  ],
+  "artifacts": [
+    "docs/codex/research/2026-07-10-bayesian-hsmm-competing-risks-framework.md",
+    "research/meta-research/objects/model-candidates/MC-001-bayesian-hsmm-competing-risks/README.md"
+  ]
+}
+

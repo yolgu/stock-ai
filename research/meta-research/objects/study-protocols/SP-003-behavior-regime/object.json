@@ -1,0 +1,20 @@
+{
+  "schemaVersion": "research-object.v1",
+  "id": "SP-003",
+  "type": "StudyProtocol",
+  "title": "직접 행동 5거래일 예측 연구 프로토콜",
+  "version": "1.0.0",
+  "lifecycleState": "proposed",
+  "evidenceLevel": "conceptual",
+  "purpose": "직접 행동 측정치의 5거래일 onset event OOF Brier 개선을 가격 전용 기준선과 비교하는 후보·분할·반증·중단·공개 규칙을 고정한다.",
+  "dependsOn": [
+    "DC-003",
+    "RQ-003"
+  ],
+  "artifacts": [
+    "research/meta-research/objects/study-protocols/SP-003-behavior-regime/protocol.md",
+    "research/meta-research/objects/study-protocols/SP-003-behavior-regime/protocol.sha256",
+    "research/rp-001/trials/ST-BEH-001.json"
+  ]
+}
+

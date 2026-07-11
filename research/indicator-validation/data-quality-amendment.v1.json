@@ -1,0 +1,122 @@
+{
+  "schemaVersion": "mania-indicator-data-quality-amendment.v1",
+  "amendmentId": "volume-unit-integrity-2026-07-10",
+  "discoveredAt": "2026-07-10",
+  "status": "active",
+  "scope": "v1.4 preregistered daily formula study",
+  "defect": {
+    "type": "adjusted_price_with_unadjusted_split_volume_units",
+    "description": "The provider archive contains split-adjusted OHLC prices while the historical volume series changes share units at known stock splits. The provider response does not declare a volume-adjustment contract.",
+    "risk": "Rolling volume ratios, volume-weighted price features, liquidity proxies, and every composite containing them are not comparable across the affected split boundary."
+  },
+  "rawDataPolicy": {
+    "rawArchivesModified": false,
+    "providerValuesPreserved": true,
+    "splitFactorsEstimatedFromOutcomeData": false
+  },
+  "rejectedRun": {
+    "runManifestSha256": "8424ef22dc10e4f2aedc8fff018ed1e5940908cd5b382286279ce0e0cdd78fcf",
+    "manifestPayloadSha256": "47bf640d6934027e7f81198aaf49efc607d4e4dfe088d271af3ea1a3cccc5bf4",
+    "disposition": "invalidated_for_final_inference",
+    "reason": "The run evaluated volume-dependent candidates across undeclared split-volume unit breaks. It is retained only as a rejected audit-trail identifier and must not support the final research conclusion."
+  },
+  "observedUnitBreaks": [
+    {
+      "symbol": "TSLA",
+      "effectiveTradingDate": "2020-08-31",
+      "announcedSplitRatio": "5-for-1",
+      "observedVolumeToPrior20SessionMedianRatio": 8.8283121644
+    },
+    {
+      "symbol": "TSLA",
+      "effectiveTradingDate": "2022-08-25",
+      "announcedSplitRatio": "3-for-1",
+      "observedVolumeToPrior20SessionMedianRatio": 1.9378201607
+    },
+    {
+      "symbol": "NVDA",
+      "effectiveTradingDate": "2021-07-20",
+      "announcedSplitRatio": "4-for-1",
+      "observedVolumeToPrior20SessionMedianRatio": 4.3548866657
+    },
+    {
+      "symbol": "NVDA",
+      "effectiveTradingDate": "2024-06-10",
+      "announcedSplitRatio": "10-for-1",
+      "observedVolumeToPrior20SessionMedianRatio": 0.7416238243
+    }
+  ],
+  "officialCorporateActionEvidence": [
+    {
+      "symbol": "TSLA",
+      "effectiveTradingDate": "2020-08-31",
+      "splitRatio": "5-for-1",
+      "primaryUrl": "https://ir.tesla.com/press-release/tesla-announces-five-one-stock-split",
+      "corroboratingUrl": "https://www.sec.gov/Archives/edgar/data/1318605/000119312520236678/d21598d8k.htm",
+      "accessedAt": "2026-07-10"
+    },
+    {
+      "symbol": "TSLA",
+      "effectiveTradingDate": "2022-08-25",
+      "splitRatio": "3-for-1",
+      "primaryUrl": "https://ir.tesla.com/press-release/tesla-announces-three-one-stock-split",
+      "corroboratingUrl": "https://www.sec.gov/Archives/edgar/data/1318605/000095017022019867/tsla-20220930.htm",
+      "accessedAt": "2026-07-10"
+    },
+    {
+      "symbol": "NVDA",
+      "effectiveTradingDate": "2021-07-20",
+      "splitRatio": "4-for-1",
+      "primaryUrl": "https://nvidianews.nvidia.com/news/nvidia-announces-four-for-one-stock-split-pending-stockholder-approval-at-annual-meeting-set-for-june-3",
+      "corroboratingUrl": "https://www.sec.gov/Archives/edgar/data/1045810/000104581021000131/nvda-20210801.htm",
+      "accessedAt": "2026-07-10"
+    },
+    {
+      "symbol": "NVDA",
+      "effectiveTradingDate": "2024-06-10",
+      "splitRatio": "10-for-1",
+      "primaryUrl": "https://nvidianews.nvidia.com/news/nvidia-announces-financial-results-for-first-quarter-fiscal-2025",
+      "corroboratingUrl": "https://www.sec.gov/Archives/edgar/data/1045810/000104581024000144/nvda-20240607.htm",
+      "accessedAt": "2026-07-10"
+    }
+  ],
+  "affectedFeatureIds": [
+    "liquidityProxy",
+    "profitBreadth",
+    "profitGainMass",
+    "volume20",
+    "volumeSurprise",
+    "vwap20",
+    "vwapDownPressure",
+    "vwapExtension",
+    "vwapPersistenceProxy"
+  ],
+  "affectedCandidateIds": [
+    "fomo.baseline.volume20",
+    "fomo.deduplicated",
+    "fomo.documented",
+    "fomo.equal",
+    "panic.baseline.volume20",
+    "panic.deduplicated",
+    "panic.documented",
+    "panic.equal",
+    "potentialPtp.baseline.vwapExtension",
+    "potentialPtp.breadth",
+    "potentialPtp.documented",
+    "potentialPtp.equal"
+  ],
+  "affectedStudyWindows": [
+    "tslaPrimary",
+    "tslaSensitivity",
+    "nvdaPrimary"
+  ],
+  "correctionPolicy": {
+    "candidateDisposition": "data_unavailable_not_zero",
+    "applicationRule": "A listed candidate is unavailable in a study window when at least one listed unit-break date for that symbol falls inside the analysis window.",
+    "priceOnlyCandidatesRetained": true,
+    "weightsOrThresholdsRetuned": false,
+    "missingValuesImputed": false,
+    "analysisVersion": "mania-indicator-study-runner/1.1.0"
+  },
+  "inferenceLimit": "This amendment is a post-discovery data-integrity repair, not a preregistered model improvement. It prevents contaminated measurements from contributing evidence and cannot be used to promote a candidate."
+}

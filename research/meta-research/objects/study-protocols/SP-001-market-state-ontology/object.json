@@ -1,0 +1,19 @@
+{
+  "schemaVersion": "research-object.v1",
+  "id": "SP-001",
+  "type": "StudyProtocol",
+  "title": "시장 상태 온톨로지와 명칭허용 사전등록",
+  "version": "1.0.1",
+  "lifecycleState": "preregistered",
+  "evidenceLevel": "conceptual",
+  "purpose": "14개 상태 후보의 5개 자료 계층별 식별 판정, 명칭허용, 반례, label permutation 및 공개 규칙을 결과 작성 전에 동결한다.",
+  "dependsOn": [
+    "DC-001",
+    "RQ-001"
+  ],
+  "artifacts": [
+    "research/meta-research/objects/study-protocols/SP-001-market-state-ontology/protocol.md",
+    "research/meta-research/objects/study-protocols/SP-001-market-state-ontology/protocol.sha256",
+    "research/rp-001/trials/ST-ONT-001.json"
+  ]
+}

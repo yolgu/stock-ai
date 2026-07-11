@@ -1,0 +1,868 @@
+{
+  "research": {
+    "id": "mania-indicator-validation",
+    "version": "1.1.0",
+    "supersedes": "1.0.0",
+    "status": "frozen",
+    "frozenAt": "2026-07-10",
+    "dataCutoff": "2026-07-09",
+    "seed": 20260710,
+    "noMarketDataAnalyzed": true,
+    "changeReason": "pre_data_spec_completion"
+  },
+  "data": {
+    "symbols": [
+      {
+        "symbol": "TSLA",
+        "role": "candidate_selection"
+      },
+      {
+        "symbol": "NVDA",
+        "role": "external_replication"
+      },
+      {
+        "symbol": "MU",
+        "role": "holdout"
+      },
+      {
+        "symbol": "000660",
+        "role": "holdout"
+      }
+    ],
+    "request": {
+      "coverage": "full_available",
+      "startDate": "1900-01-01",
+      "endDate": "2026-07-09",
+      "interval": "1d",
+      "adjusted": true,
+      "completedCandlesOnly": true
+    }
+  },
+  "anchors": [
+    {
+      "id": "tsla-2020-q2-earnings-next-session",
+      "symbol": "TSLA",
+      "date": "2020-07-23",
+      "event": "2020 Q2 earnings",
+      "timing": "next_session",
+      "role": "primary"
+    },
+    {
+      "id": "nvda-fy2024-q1-earnings-next-session",
+      "symbol": "NVDA",
+      "date": "2023-05-25",
+      "event": "FY2024 Q1 earnings and guidance",
+      "timing": "next_session",
+      "role": "primary"
+    },
+    {
+      "id": "tsla-five-for-one-split-next-session",
+      "symbol": "TSLA",
+      "date": "2020-08-12",
+      "event": "five-for-one stock split announcement",
+      "timing": "next_session",
+      "role": "sensitivity"
+    }
+  ],
+  "protocol": {
+    "dataCutoff": "2026-07-09",
+    "windows": {
+      "anchored": {
+        "anchorIncluded": true,
+        "forwardActualCandles": 360,
+        "blocks": {
+          "count": 3,
+          "actualCandlesPerBlock": 120
+        }
+      },
+      "current": {
+        "symbols": [
+          "MU",
+          "000660"
+        ],
+        "lastActualCandles": 120,
+        "fourMonth": {
+          "startDate": "2026-03-10",
+          "endDate": "2026-07-09",
+          "status": "interim"
+        }
+      }
+    },
+    "horizons": [
+      1,
+      3,
+      5,
+      10
+    ],
+    "outcomeObservation": {
+      "signalTime": "close_t",
+      "futureWindow": {
+        "start": "t+1",
+        "end": "t+h",
+        "inclusive": true
+      },
+      "reference": {
+        "close": "C_t",
+        "atr": "ATR14_t"
+      },
+      "firstPassage": {
+        "source": "future_OHLC",
+        "sameSessionDualHit": "ambiguous_excluded",
+        "neitherHit": "failure"
+      },
+      "rightCensoring": {
+        "tail": "last_h",
+        "disposition": "right_censored_excluded"
+      }
+    },
+    "percentile": {
+      "method": "midrank",
+      "formula": "(count_less + 0.5 * count_equal) / n",
+      "referenceWindow": {
+        "direction": "prior_only",
+        "maxSessions": 252,
+        "minSessions": 60,
+        "includesSignalSession": false
+      }
+    },
+    "threshold": {
+      "fit": "train_only",
+      "quantile": 0.8
+    },
+    "walkForward": {
+      "method": "expanding",
+      "trainingData": "past_only",
+      "purge": {
+        "sessions": 10,
+        "placement": "training_tail_before_test"
+      },
+      "embargo": {
+        "sessions": 10,
+        "placement": "after_test_before_next_train"
+      },
+      "testTuningAllowed": false
+    },
+    "episodes": {
+      "ordering": "chronological",
+      "start": "first_signal_crossing",
+      "newEventSuppression": "through_t_plus_h_inclusive",
+      "labels": "shared_across_candidates"
+    },
+    "marketEventClustering": {
+      "direction": "same",
+      "targetDateToleranceCalendarDays": 1,
+      "globalEventWeight": "1/clusterSize",
+      "symbolMetricsRetainEvents": true
+    },
+    "phases": {
+      "prodrome": "t-5..t-1",
+      "start": "t",
+      "early": "start_to_half_barrier",
+      "middle": "half_barrier_to_full_barrier",
+      "extreme": "full_barrier_hit",
+      "firstRebound": {
+        "direction": "opposite",
+        "closeMoveMinimumAtr": 0.25
+      },
+      "confirmation": {
+        "consecutiveCloses": 2,
+        "newExtremeAllowed": false
+      },
+      "end": "confirmation_or_vertical_barrier"
+    },
+    "minimumEvents": {
+      "count": 30,
+      "unit": "candidate_x_outcome_x_symbol_x_split"
+    },
+    "bootstrap": {
+      "method": "moving_block",
+      "blockLengths": [
+        5,
+        10,
+        20
+      ],
+      "repetitions": 2000,
+      "seed": 20260710,
+      "confidenceInterval": {
+        "method": "percentile",
+        "lowerQuantile": 0.025,
+        "upperQuantile": 0.975
+      },
+      "metrics": [
+        "BrierDifference",
+        "PR-AUC",
+        "MCC",
+        "leadTime"
+      ]
+    },
+    "posterior": {
+      "prior": "Jeffreys",
+      "distribution": "Beta",
+      "alpha": 0.5,
+      "beta": 0.5
+    },
+    "significance": {
+      "alpha": 0.05,
+      "secondary": {
+        "method": "BH",
+        "scope": "within_family_x_horizon"
+      },
+      "primaryConclusions": {
+        "method": "Holm",
+        "scope": "across_primary_family_conclusions"
+      }
+    }
+  },
+  "outcomeDefinitions": {
+    "common": {
+      "observationProtocol": "protocol.outcomeObservation"
+    },
+    "eligibilityRules": {
+      "profitTakingLike": "(C_t / C_{t-20} - 1) >= 2 * (ATR14_t / C_t)",
+      "reliefAfterSelloff": "(max(C_{t-5:t-1}) - C_t) >= 1.5 * ATR14_t"
+    },
+    "fomoContinuation": {
+      "target": {
+        "direction": "upper",
+        "atrMultiple": 0.5
+      },
+      "opposite": {
+        "direction": "lower",
+        "atrMultiple": 0.3
+      }
+    },
+    "fomoExhaustion": {
+      "target": {
+        "direction": "lower",
+        "atrMultiple": 0.5
+      },
+      "opposite": {
+        "direction": "upper",
+        "atrMultiple": 0.5
+      }
+    },
+    "profitTakingLike": {
+      "eligibilityRuleId": "profitTakingLike",
+      "target": {
+        "direction": "lower",
+        "atrMultiple": 0.75
+      },
+      "opposite": {
+        "direction": "upper",
+        "atrMultiple": 0.75
+      }
+    },
+    "panicOnset": {
+      "target": {
+        "direction": "lower",
+        "atrMultiple": 1.5
+      },
+      "opposite": {
+        "direction": "upper",
+        "atrMultiple": 0.75
+      }
+    },
+    "panicContinuation": {
+      "target": {
+        "direction": "lower",
+        "atrMultiple": 0.75
+      },
+      "opposite": {
+        "direction": "upper",
+        "atrMultiple": 0.5
+      }
+    },
+    "reliefFirstRebound": {
+      "eligibilityRuleId": "reliefAfterSelloff",
+      "target": {
+        "direction": "upper",
+        "atrMultiple": 0.75
+      },
+      "opposite": {
+        "direction": "lower",
+        "atrMultiple": 0.5
+      }
+    },
+    "reliefConfirmed": {
+      "eligibilityRuleId": "reliefAfterSelloff",
+      "baseOutcomeDefinitionId": "reliefFirstRebound",
+      "targetDeadline": "t+h-2",
+      "confirmation": {
+        "sessions": 2,
+        "lowCondition": "L >= episodeLow",
+        "closeCondition": "C >= midpointRecovery"
+      },
+      "applicableHorizons": [
+        3,
+        5,
+        10
+      ]
+    },
+    "fakeRelief": {
+      "requiresOutcomeDefinitionId": "reliefFirstRebound",
+      "target": "episodeLow_break",
+      "withinSessions": 3
+    }
+  },
+  "featureDefinitions": {
+    "common": {
+      "returnDefinition": "r_j = log(C_j / C_{j-1})",
+      "zeroDenominator": "missing",
+      "insufficientLookback": "missing",
+      "zeroImputationAllowed": false
+    },
+    "atr14": {
+      "formula": "mean(TR_{t-13:t})",
+      "includesSignalSession": true
+    },
+    "rv20": {
+      "formula": "std(r_{t-20:t-1})"
+    },
+    "highPrev20": {
+      "formula": "max(H_{t-20:t-1})"
+    },
+    "lowPrev20": {
+      "formula": "min(L_{t-20:t-1})"
+    },
+    "returnImpulse": {
+      "formula": "max(log(C_t / C_{t-5}), 0) / (RV20_t * sqrt(5))"
+    },
+    "returnAccel": {
+      "formula": "max(r_t - mean(r_{t-5:t-1}), 0) / RV20_t"
+    },
+    "volumeSurprise": {
+      "rawFormula": "V_t / median(V_{t-20:t-1})",
+      "transform": "percentile"
+    },
+    "rangeChase": {
+      "formula": "0.6 * clip((C_t - lowPrev20_t) / (highPrev20_t - lowPrev20_t), 0, 1) + 0.4 * clip((C_t - highPrev20_t) / ATR14_t, 0, 1)"
+    },
+    "typicalPrice": {
+      "symbol": "TP_t",
+      "formula": "(H_t + L_t + C_t) / 3"
+    },
+    "vwap20": {
+      "formula": "sum_{j=t-19}^{t}(TP_j * V_j) / sum_{j=t-19}^{t}(V_j)"
+    },
+    "vwapPersistenceProxy": {
+      "formula": "sum_{j=t-4}^{t}(V_j * I(TP_j > VWAP20_j)) / sum_{j=t-4}^{t}(V_j)"
+    },
+    "pullbackHold": {
+      "formula": "1 - clip((highPrev20_t - C_t) / ATR14_t, 0, 1)"
+    },
+    "downMoveImpulse": {
+      "formula": "max(-log(C_t / C_{t-3}), 0) / (RV20_t * sqrt(3))"
+    },
+    "vwapDownPressure": {
+      "formula": "0.5 * clip((VWAP20_t - C_t) / ATR14_t, 0, 1) + 0.5 * (sum_{j=t-4}^{t}(V_j * I(TP_j < VWAP20_j)) / sum_{j=t-4}^{t}(V_j))"
+    },
+    "newLowCount5": {
+      "formula": "sum_{j=t-4}^{t}(I(L_j < lowPrev20_j))"
+    },
+    "breakdownCascade": {
+      "formula": "0.6 * clip((lowPrev20_t - C_t) / ATR14_t, 0, 1) + 0.4 * percentile(newLowCount5_t)"
+    },
+    "liquidityProxy": {
+      "rawFormula": "abs(r_t) / (C_t * V_t)",
+      "transform": "percentile"
+    },
+    "potentialPtpProxy": {
+      "windowSessions": 120,
+      "volumeWeight": "raw"
+    },
+    "profitBreadth": {
+      "formula": "sum_{j=t-119}^{t}(V_j * I(TP_j < C_t)) / sum_{j=t-119}^{t}(V_j)"
+    },
+    "profitGainMass": {
+      "formula": "clip(sum_{j=t-119}^{t}(V_j * max(C_t - TP_j, 0)) / (sum_{j=t-119}^{t}(V_j) * ATR14_t), 0, 1)"
+    },
+    "vwapExtension": {
+      "formula": "clip((C_t - VWAP20_t) / ATR14_t, 0, 1)"
+    },
+    "single_session_rebound": {
+      "lowerWickFormula": "(C_t - L_t) / (H_t - L_t)",
+      "lowerWickMissingWhen": "H_t = L_t",
+      "reboundFormula": "clip((C_t - min(L_{t-4:t})) / ATR14_t, 0, 1)",
+      "formula": "0.5 * lowerWick_t + 0.5 * rebound_t"
+    },
+    "two_session_persistence_and_no_new_low": {
+      "originalFeatureDefinitionId": "single_session_rebound",
+      "gateFormula": "I(C_t > C_{t-1} > C_{t-2} and L_t >= L_{t-1})",
+      "formula": "single_session_rebound_t * gate_t"
+    }
+  },
+  "candidateFamilies": [
+    {
+      "id": "fomo",
+      "components": [
+        "returnImpulse",
+        "returnAccel",
+        "volumeSurprise",
+        "rangeChase",
+        "vwapPersistenceProxy",
+        "pullbackHold"
+      ],
+      "candidates": [
+        {
+          "id": "fomo.documented",
+          "kind": "composite",
+          "outcomeDefinitionId": "fomoContinuation",
+          "outcomeDefinitionIds": [
+            "fomoContinuation",
+            "fomoExhaustion"
+          ],
+          "applicableHorizons": [
+            1,
+            3,
+            5,
+            10
+          ],
+          "weights": {
+            "returnImpulse": 0.24,
+            "returnAccel": 0.16,
+            "volumeSurprise": 0.22,
+            "rangeChase": 0.16,
+            "vwapPersistenceProxy": 0.14,
+            "pullbackHold": 0.08
+          }
+        },
+        {
+          "id": "fomo.equal",
+          "kind": "composite",
+          "outcomeDefinitionId": "fomoContinuation",
+          "outcomeDefinitionIds": [
+            "fomoContinuation",
+            "fomoExhaustion"
+          ],
+          "applicableHorizons": [
+            1,
+            3,
+            5,
+            10
+          ],
+          "weights": {
+            "returnImpulse": 0.16666666666666666,
+            "returnAccel": 0.16666666666666666,
+            "volumeSurprise": 0.16666666666666666,
+            "rangeChase": 0.16666666666666666,
+            "vwapPersistenceProxy": 0.16666666666666666,
+            "pullbackHold": 0.16666666666666666
+          }
+        },
+        {
+          "id": "fomo.deduplicated",
+          "kind": "composite",
+          "outcomeDefinitionId": "fomoContinuation",
+          "outcomeDefinitionIds": [
+            "fomoContinuation",
+            "fomoExhaustion"
+          ],
+          "applicableHorizons": [
+            1,
+            3,
+            5,
+            10
+          ],
+          "weights": {
+            "returnImpulse": 0.3,
+            "returnAccel": 0.1,
+            "volumeSurprise": 0.25,
+            "rangeChase": 0.15,
+            "vwapPersistenceProxy": 0.1,
+            "pullbackHold": 0.1
+          }
+        },
+        {
+          "id": "fomo.baseline.momentum5",
+          "kind": "baseline",
+          "outcomeDefinitionId": "fomoContinuation",
+          "outcomeDefinitionIds": [
+            "fomoContinuation",
+            "fomoExhaustion"
+          ],
+          "applicableHorizons": [
+            1,
+            3,
+            5,
+            10
+          ],
+          "formula": "momentum5"
+        },
+        {
+          "id": "fomo.baseline.volume20",
+          "kind": "baseline",
+          "outcomeDefinitionId": "fomoContinuation",
+          "outcomeDefinitionIds": [
+            "fomoContinuation",
+            "fomoExhaustion"
+          ],
+          "applicableHorizons": [
+            1,
+            3,
+            5,
+            10
+          ],
+          "formula": "volume20"
+        },
+        {
+          "id": "fomo.baseline.breakout20",
+          "kind": "baseline",
+          "outcomeDefinitionId": "fomoContinuation",
+          "outcomeDefinitionIds": [
+            "fomoContinuation",
+            "fomoExhaustion"
+          ],
+          "applicableHorizons": [
+            1,
+            3,
+            5,
+            10
+          ],
+          "formula": "breakout20"
+        }
+      ]
+    },
+    {
+      "id": "panic",
+      "components": [
+        "downMoveImpulse",
+        "volumeSurprise",
+        "vwapDownPressure",
+        "breakdownCascade",
+        "liquidityProxy"
+      ],
+      "candidates": [
+        {
+          "id": "panic.documented",
+          "kind": "composite",
+          "outcomeDefinitionId": "panicContinuation",
+          "outcomeDefinitionIds": [
+            "panicOnset",
+            "panicContinuation"
+          ],
+          "applicableHorizons": [
+            1,
+            3,
+            5,
+            10
+          ],
+          "weights": {
+            "downMoveImpulse": 0.3,
+            "volumeSurprise": 0.25,
+            "vwapDownPressure": 0.2,
+            "breakdownCascade": 0.15,
+            "liquidityProxy": 0.1
+          }
+        },
+        {
+          "id": "panic.equal",
+          "kind": "composite",
+          "outcomeDefinitionId": "panicContinuation",
+          "outcomeDefinitionIds": [
+            "panicOnset",
+            "panicContinuation"
+          ],
+          "applicableHorizons": [
+            1,
+            3,
+            5,
+            10
+          ],
+          "weights": {
+            "downMoveImpulse": 0.2,
+            "volumeSurprise": 0.2,
+            "vwapDownPressure": 0.2,
+            "breakdownCascade": 0.2,
+            "liquidityProxy": 0.2
+          }
+        },
+        {
+          "id": "panic.deduplicated",
+          "kind": "composite",
+          "outcomeDefinitionId": "panicContinuation",
+          "outcomeDefinitionIds": [
+            "panicOnset",
+            "panicContinuation"
+          ],
+          "applicableHorizons": [
+            1,
+            3,
+            5,
+            10
+          ],
+          "weights": {
+            "downMoveImpulse": 0.3,
+            "volumeSurprise": 0.25,
+            "vwapDownPressure": 0.2,
+            "breakdownCascade": 0.1,
+            "liquidityProxy": 0.15
+          }
+        },
+        {
+          "id": "panic.baseline.drawdown3",
+          "kind": "baseline",
+          "outcomeDefinitionId": "panicContinuation",
+          "outcomeDefinitionIds": [
+            "panicOnset",
+            "panicContinuation"
+          ],
+          "applicableHorizons": [
+            1,
+            3,
+            5,
+            10
+          ],
+          "formula": "drawdown3"
+        },
+        {
+          "id": "panic.baseline.volume20",
+          "kind": "baseline",
+          "outcomeDefinitionId": "panicContinuation",
+          "outcomeDefinitionIds": [
+            "panicOnset",
+            "panicContinuation"
+          ],
+          "applicableHorizons": [
+            1,
+            3,
+            5,
+            10
+          ],
+          "formula": "volume20"
+        },
+        {
+          "id": "panic.baseline.lowBreak20",
+          "kind": "baseline",
+          "outcomeDefinitionId": "panicContinuation",
+          "outcomeDefinitionIds": [
+            "panicOnset",
+            "panicContinuation"
+          ],
+          "applicableHorizons": [
+            1,
+            3,
+            5,
+            10
+          ],
+          "formula": "lowBreak20"
+        }
+      ]
+    },
+    {
+      "id": "potentialPtp",
+      "components": [
+        "profitBreadth",
+        "profitGainMass",
+        "vwapExtension"
+      ],
+      "candidates": [
+        {
+          "id": "potentialPtp.documented",
+          "kind": "composite",
+          "outcomeDefinitionId": "profitTakingLike",
+          "outcomeDefinitionIds": [
+            "profitTakingLike"
+          ],
+          "applicableHorizons": [
+            1,
+            3,
+            5,
+            10
+          ],
+          "weights": {
+            "profitBreadth": 0.45,
+            "profitGainMass": 0.35,
+            "vwapExtension": 0.2
+          }
+        },
+        {
+          "id": "potentialPtp.equal",
+          "kind": "composite",
+          "outcomeDefinitionId": "profitTakingLike",
+          "outcomeDefinitionIds": [
+            "profitTakingLike"
+          ],
+          "applicableHorizons": [
+            1,
+            3,
+            5,
+            10
+          ],
+          "weights": {
+            "profitBreadth": 0.3333333333333333,
+            "profitGainMass": 0.3333333333333333,
+            "vwapExtension": 0.3333333333333333
+          }
+        },
+        {
+          "id": "potentialPtp.breadth",
+          "kind": "composite",
+          "outcomeDefinitionId": "profitTakingLike",
+          "outcomeDefinitionIds": [
+            "profitTakingLike"
+          ],
+          "applicableHorizons": [
+            1,
+            3,
+            5,
+            10
+          ],
+          "weights": {
+            "profitBreadth": 0.5,
+            "profitGainMass": 0.3,
+            "vwapExtension": 0.2
+          }
+        },
+        {
+          "id": "potentialPtp.baseline.runup20",
+          "kind": "baseline",
+          "outcomeDefinitionId": "profitTakingLike",
+          "outcomeDefinitionIds": [
+            "profitTakingLike"
+          ],
+          "applicableHorizons": [
+            1,
+            3,
+            5,
+            10
+          ],
+          "formula": "runup20"
+        },
+        {
+          "id": "potentialPtp.baseline.vwapExtension",
+          "kind": "baseline",
+          "outcomeDefinitionId": "profitTakingLike",
+          "outcomeDefinitionIds": [
+            "profitTakingLike"
+          ],
+          "applicableHorizons": [
+            1,
+            3,
+            5,
+            10
+          ],
+          "formula": "vwapExtension"
+        }
+      ]
+    },
+    {
+      "id": "relief",
+      "components": [
+        "rebound",
+        "persistence",
+        "noNewLow"
+      ],
+      "candidates": [
+        {
+          "id": "relief.originalProxy",
+          "kind": "proxy",
+          "outcomeDefinitionId": "reliefFirstRebound",
+          "outcomeDefinitionIds": [
+            "reliefFirstRebound",
+            "fakeRelief"
+          ],
+          "applicableHorizons": [
+            1,
+            3,
+            5,
+            10
+          ],
+          "source": "documented",
+          "formula": "single_session_rebound"
+        },
+        {
+          "id": "relief.persistenceGated",
+          "kind": "repaired",
+          "outcomeDefinitionId": "reliefConfirmed",
+          "outcomeDefinitionIds": [
+            "reliefConfirmed",
+            "fakeRelief"
+          ],
+          "applicableHorizons": [
+            3,
+            5,
+            10
+          ],
+          "repair": "persistence_gated",
+          "formula": "two_session_persistence_and_no_new_low"
+        }
+      ]
+    }
+  ],
+  "identifiability": {
+    "missingPolicy": "no_zero_imputation",
+    "exactFlowCandidates": [
+      {
+        "id": "panic.earlyRiskExactFlow",
+        "dataAvailability": "not_identifiable",
+        "missingInputs": [
+          "historical_bid_cancellations",
+          "historical_depth",
+          "historical_spread",
+          "historical_order_flow_imbalance"
+        ]
+      },
+      {
+        "id": "panic.reliefExactFlow",
+        "dataAvailability": "not_identifiable",
+        "missingInputs": [
+          "historical_aggressor_side",
+          "historical_order_flow_imbalance"
+        ]
+      },
+      {
+        "id": "potentialPtp.realizedExactFlow",
+        "dataAvailability": "not_identifiable",
+        "missingInputs": [
+          "historical_aggressor_side",
+          "historical_order_flow_imbalance"
+        ]
+      }
+    ]
+  },
+  "selection": {
+    "primaryOutcome": "panicContinuation@5",
+    "secondaryOutcomes": {
+      "scope": "all_families_and_horizons",
+      "families": [
+        "fomo",
+        "panic",
+        "potentialPtp",
+        "relief"
+      ],
+      "horizons": [
+        1,
+        3,
+        5,
+        10
+      ]
+    },
+    "sequence": [
+      {
+        "order": 1,
+        "symbols": [
+          "TSLA"
+        ],
+        "purpose": "candidate_selection"
+      },
+      {
+        "order": 2,
+        "symbols": [
+          "NVDA"
+        ],
+        "purpose": "external_replication"
+      },
+      {
+        "order": 3,
+        "symbols": [
+          "MU",
+          "000660"
+        ],
+        "purpose": "holdout"
+      }
+    ],
+    "tieOrUncertaintyRule": "choose_simpler_candidate",
+    "baselineWinRequirement": "reject_candidate_if_no_baseline_win",
+    "testThresholdPolicy": "no_threshold_change"
+  }
+}

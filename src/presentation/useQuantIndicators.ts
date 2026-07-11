@@ -13,8 +13,16 @@ export interface UseQuantIndicatorsInput {
   marketDataStatus: "idle" | "loading" | "ready" | "error";
 }
 
+export type QuantIndicatorLoadStatus =
+  | "idle"
+  | "emptyLoading"
+  | "refreshing"
+  | "ready"
+  | "error"
+  | "failedRefresh";
+
 export interface UseQuantIndicatorsResult {
-  status: "idle" | "loading" | "ready" | "error";
+  status: QuantIndicatorLoadStatus;
   snapshotsByCardId: Record<string, QuantIndicatorSnapshotPayload>;
   message: string | null;
   refreshNow(): Promise<void>;
@@ -43,7 +51,11 @@ export function useQuantIndicators(
     }
 
     try {
-      setState((current) => ({ ...current, status: "loading", message: null }));
+      setState((current) => ({
+        ...current,
+        status: hasSnapshots(current.snapshotsByCardId) ? "refreshing" : "emptyLoading",
+        message: null
+      }));
       const result = await quantIndicatorClient.refreshWatchlist({
         cardIds: input.activeCards.map((card) => card.id)
       });
@@ -55,7 +67,7 @@ export function useQuantIndicators(
     } catch (error) {
       setState((current) => ({
         ...current,
-        status: "error",
+        status: hasSnapshots(current.snapshotsByCardId) ? "failedRefresh" : "error",
         message: error instanceof Error ? error.message : "정량 지표 계산에 실패했습니다."
       }));
     }
@@ -69,6 +81,12 @@ export function useQuantIndicators(
     ...state,
     refreshNow
   };
+}
+
+function hasSnapshots(
+  snapshotsByCardId: Record<string, QuantIndicatorSnapshotPayload>
+): boolean {
+  return Object.keys(snapshotsByCardId).length > 0;
 }
 
 function indexSnapshotsByCardId(

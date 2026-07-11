@@ -1,0 +1,19 @@
+{
+  "schemaVersion": "research-object.v1",
+  "id": "SP-007",
+  "type": "StudyProtocol",
+  "title": "20거래일 꼬리위험 효용 연구 프로토콜",
+  "version": "1.0.0",
+  "lifecycleState": "proposed",
+  "evidenceLevel": "conceptual",
+  "purpose": "외부 OOF 신호와 비용분포를 결합한 20거래일 위험조정 효용 증분을 NoTrade·고정 단순 위험 기준선과 비교하는 규칙을 고정한다.",
+  "dependsOn": [
+    "DC-007",
+    "RQ-007"
+  ],
+  "artifacts": [
+    "research/meta-research/objects/study-protocols/SP-007-tail-risk/protocol.md",
+    "research/meta-research/objects/study-protocols/SP-007-tail-risk/protocol.sha256",
+    "research/rp-001/trials/ST-RSK-001.json"
+  ]
+}
