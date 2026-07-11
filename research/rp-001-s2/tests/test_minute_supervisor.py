@@ -8,10 +8,9 @@ import unittest
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable, MutableMapping
+from typing import Callable
 
 from rp001_s2.archive_contract import CollectionScope, SampleRole
-from rp001_s2.daily_scope_plan import DailyPlanExecutionState
 from rp001_s2.minute_scope_plan import (
     build_toss_minute_scope_plan,
     canonical_minute_plan_bytes,
@@ -100,7 +99,183 @@ def _write_plan(root: Path) -> Path:
     return path
 
 
+def _canonical_json_bytes(value: dict[str, object]) -> bytes:
+    return json.dumps(
+        value,
+        allow_nan=False,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+
+
+def _write_retry_queue(
+    root: Path,
+    *,
+    minute_scopes: tuple[CollectionScope, ...],
+    out_of_plan: bool = False,
+) -> Path:
+    items: list[dict[str, object]] = []
+    for index, scope in enumerate(minute_scopes):
+        acquisition_key = (
+            "f" * 64 if out_of_plan and index == 0 else scope.acquisition_key
+        )
+        event = {
+            "eventType": "toss_minute_scope_terminal",
+            "payload": {
+                "acquisitionKey": acquisition_key,
+                "scope": scope.to_canonical_body(),
+            },
+        }
+        if out_of_plan and index == 0:
+            event["payload"]["scope"] = {
+                **scope.to_canonical_body(),
+                "instrumentId": "outside-plan",
+            }
+        event_source = _canonical_json_bytes(event)
+        event_path = root / f"minute-event-{index}.json"
+        event_path.write_bytes(event_source)
+        items.append(
+            {
+                "acquisitionKey": acquisition_key,
+                "adjustmentMode": scope.adjustment_mode,
+                "endAt": scope.end_at.isoformat(timespec="seconds").replace(
+                    "+00:00", "Z"
+                ),
+                "interval": "1m",
+                "provider": "toss",
+                "reason": "concurrent_oauth_invalidated_active_token",
+                "retryState": "ready_after_next_minute_batch_reauthentication",
+                "sourceEventPath": str(event_path),
+                "sourceEventSha256": hashlib.sha256(event_source).hexdigest(),
+                "startAt": scope.start_at.isoformat(timespec="seconds").replace(
+                    "+00:00", "Z"
+                ),
+                "symbol": scope.symbol,
+            }
+        )
+    queue = {
+        "createdAt": "2026-07-12T00:00:00Z",
+        "groups": [
+            {
+                "groupId": "minute-retry",
+                "itemCount": len(items),
+                "items": items,
+            }
+        ],
+        "itemCount": len(items),
+        "ordersAccountsAssetsAccessed": False,
+        "schemaVersion": "rp001-s2-toss-retry-queue.v1",
+        "status": "open",
+    }
+    source = _canonical_json_bytes(queue)
+    path = root / "retry-queue.json"
+    path.write_bytes(source)
+    Path(f"{path}.sha256").write_text(
+        f"{hashlib.sha256(source).hexdigest()}\n",
+        encoding="ascii",
+    )
+    return path
+
+
 class MinuteSupervisorTest(unittest.TestCase):
+    def test_verified_retry_scopes_run_first_once_then_the_whole_plan(self) -> None:
+        sessions: list[_Session] = []
+        batch_runner = _BatchRunner()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            plan_path = _write_plan(root)
+            plan = build_toss_minute_scope_plan(
+                instruments=(("US-AAPL", "AAPL"), ("US-MSFT", "MSFT")),
+                start_at=datetime(2026, 7, 1, tzinfo=timezone.utc),
+                end_at=datetime(2026, 7, 3, tzinfo=timezone.utc),
+                instrument_master_sha256="a" * 64,
+                sample_role=SampleRole.SEEN,
+            )
+            priority_scopes = (plan.scopes[2], plan.scopes[5])
+            retry_queue_path = _write_retry_queue(
+                root,
+                minute_scopes=priority_scopes,
+            )
+            credential_path = root / "credentials.json"
+            credential_path.write_text("fixture", encoding="utf-8")
+
+            summary = run_minute_supervisor(
+                MinuteSupervisorArguments(
+                    plan_path=plan_path,
+                    retry_queue_path=retry_queue_path,
+                    credential_file=credential_path,
+                    archive_root=root / "archives",
+                    ledger_root=(root / "ledger").resolve(),
+                    batch_size=3,
+                ),
+                clock=lambda: datetime(2026, 7, 12, tzinfo=timezone.utc),
+                request_pacer=_RecordingPacer(),
+                credential_loader=lambda _path: {
+                    "TOSS_CLIENT_ID": "identifier",
+                    "TOSS_CLIENT_SECRET": "private-value",
+                },
+                session_factory=lambda **_kwargs: (
+                    sessions.append(_Session()) or sessions[-1]
+                ),
+                batch_runner=batch_runner,
+                output=io.StringIO(),
+            )
+
+        flattened = tuple(scope for batch in batch_runner.batches for scope in batch)
+        self.assertEqual(batch_runner.batches[0], priority_scopes)
+        self.assertEqual(len(flattened), plan.scope_count)
+        self.assertEqual(
+            len({scope.acquisition_key for scope in flattened}),
+            plan.scope_count,
+        )
+        self.assertEqual(summary.priority_scope_count, 2)
+        self.assertEqual(summary.scope_count, plan.scope_count)
+
+    def test_retry_queue_tamper_is_rejected_before_credentials(self) -> None:
+        for fault in ("queue_sidecar", "source_event", "outside_plan"):
+            with self.subTest(fault=fault), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                plan_path = _write_plan(root)
+                plan = build_toss_minute_scope_plan(
+                    instruments=(("US-AAPL", "AAPL"), ("US-MSFT", "MSFT")),
+                    start_at=datetime(2026, 7, 1, tzinfo=timezone.utc),
+                    end_at=datetime(2026, 7, 3, tzinfo=timezone.utc),
+                    instrument_master_sha256="a" * 64,
+                    sample_role=SampleRole.SEEN,
+                )
+                retry_queue_path = _write_retry_queue(
+                    root,
+                    minute_scopes=(plan.scopes[0],),
+                    out_of_plan=fault == "outside_plan",
+                )
+                if fault == "queue_sidecar":
+                    retry_queue_path.write_bytes(
+                        retry_queue_path.read_bytes() + b"tampered"
+                    )
+                elif fault == "source_event":
+                    (root / "minute-event-0.json").write_bytes(b"tampered")
+
+                with self.assertRaisesRegex(
+                    MinuteSupervisorError,
+                    "retry_queue_verification_failed",
+                ):
+                    run_minute_supervisor(
+                        MinuteSupervisorArguments(
+                            plan_path=plan_path,
+                            retry_queue_path=retry_queue_path,
+                            credential_file=root / "credentials.json",
+                            archive_root=root / "archives",
+                            ledger_root=(root / "ledger").resolve(),
+                            batch_size=3,
+                        ),
+                        credential_loader=lambda _path: self.fail(
+                            "credentials loaded"
+                        ),
+                        batch_runner=_BatchRunner(),
+                        output=io.StringIO(),
+                    )
+
     def test_same_credential_file_cannot_open_a_second_supervisor(self) -> None:
         sessions: list[_Session] = []
         batch_runner = _BatchRunner()
@@ -239,9 +414,13 @@ class MinuteSupervisorTest(unittest.TestCase):
         }
 
         self.assertIn("credential_file", destinations)
+        self.assertIn("retry_queue_path", destinations)
         self.assertTrue(
             destinations.isdisjoint(
                 {
+                    "symbol",
+                    "start_at",
+                    "end_at",
                     "client_id",
                     "client_secret",
                     "token",

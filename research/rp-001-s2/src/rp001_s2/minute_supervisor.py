@@ -3,13 +3,9 @@
 from __future__ import annotations
 
 import argparse
-import fcntl
 import hashlib
 import json
-import os
-import stat
 import sys
-import threading
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -35,14 +31,19 @@ from rp001_s2.toss_intraday_run import (
     load_secure_toss_environment,
     open_toss_minute_session,
 )
+from rp001_s2.toss_retry_queue import (
+    TossRetryQueueError,
+    load_verified_toss_retry_queue,
+)
+from rp001_s2.toss_session_lease import (
+    ExclusiveTossSessionLease,
+    TossSessionLeaseError,
+)
 
 
-_MAX_PLAN_BYTES = 16 * 1024 * 1024
+_MAX_PLAN_BYTES = 64 * 1024 * 1024
 _DEFAULT_BATCH_SIZE = 256
 _MAX_BATCH_SIZE = 4096
-_SINGLE_SESSION_LOCK_NAME = ".toss-openapi-single-session.lock"
-_ACTIVE_SESSION_LOCK = threading.Lock()
-_ACTIVE_SESSION_KEYS: set[str] = set()
 
 
 class MinuteSupervisorError(ValueError):
@@ -59,12 +60,14 @@ class MinuteSupervisorArguments:
     credential_file: Path
     archive_root: Path
     ledger_root: Path
+    retry_queue_path: Path | None = None
     batch_size: int = _DEFAULT_BATCH_SIZE
 
 
 @dataclass(frozen=True)
 class MinuteSupervisorSummary:
     scope_count: int
+    priority_scope_count: int
     batch_count: int
     completed_count: int
     partial_count: int
@@ -75,62 +78,6 @@ class MinuteSupervisorSummary:
     resumed_count: int
     total_row_count: int
     total_capture_count: int
-
-
-class _ExclusiveTossSessionLease:
-    """Reject concurrent supervisor processes before authentication."""
-
-    def __init__(self, descriptor: int, session_key: str) -> None:
-        self._descriptor = descriptor
-        self._session_key = session_key
-        self._closed = False
-
-    @classmethod
-    def acquire(cls, credential_file: Path) -> _ExclusiveTossSessionLease:
-        lock_path = credential_file.parent / _SINGLE_SESSION_LOCK_NAME
-        session_key = str(lock_path.resolve())
-        descriptor = -1
-        with _ACTIVE_SESSION_LOCK:
-            if session_key in _ACTIVE_SESSION_KEYS:
-                raise MinuteSupervisorError("session_already_active")
-            try:
-                descriptor = os.open(
-                    lock_path,
-                    os.O_RDWR
-                    | os.O_CREAT
-                    | getattr(os, "O_CLOEXEC", 0)
-                    | getattr(os, "O_NOFOLLOW", 0),
-                    0o600,
-                )
-                metadata = os.fstat(descriptor)
-                if (
-                    not stat.S_ISREG(metadata.st_mode)
-                    or metadata.st_uid != os.getuid()
-                ):
-                    raise OSError
-                os.fchmod(descriptor, 0o600)
-                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except BlockingIOError:
-                if descriptor >= 0:
-                    os.close(descriptor)
-                raise MinuteSupervisorError("session_already_active") from None
-            except OSError:
-                if descriptor >= 0:
-                    os.close(descriptor)
-                raise MinuteSupervisorError("session_lock_unavailable") from None
-            _ACTIVE_SESSION_KEYS.add(session_key)
-        return cls(descriptor, session_key)
-
-    def close(self) -> None:
-        if self._closed:
-            return
-        self._closed = True
-        with _ACTIVE_SESSION_LOCK:
-            _ACTIVE_SESSION_KEYS.discard(self._session_key)
-            try:
-                fcntl.flock(self._descriptor, fcntl.LOCK_UN)
-            finally:
-                os.close(self._descriptor)
 
 
 def build_supervisor_argument_parser() -> argparse.ArgumentParser:
@@ -145,6 +92,11 @@ def build_supervisor_argument_parser() -> argparse.ArgumentParser:
         dest="credential_file",
         type=Path,
         required=True,
+    )
+    parser.add_argument(
+        "--retry-queue",
+        dest="retry_queue_path",
+        type=Path,
     )
     parser.add_argument(
         "--archive-root",
@@ -177,6 +129,7 @@ def parse_supervisor_arguments(
         credential_file=namespace.credential_file,
         archive_root=namespace.archive_root,
         ledger_root=namespace.ledger_root.resolve(),
+        retry_queue_path=namespace.retry_queue_path,
         batch_size=namespace.batch_size,
     )
 
@@ -196,9 +149,13 @@ def run_minute_supervisor(
     """Verify first, then reuse one lazy session and pacer across all batches."""
     _validate_arguments(arguments)
     plan = _load_verified_plan(arguments.plan_path)
-    lease = _ExclusiveTossSessionLease.acquire(arguments.credential_file)
+    priority_scopes = _load_priority_scopes(plan, arguments.retry_queue_path)
+    try:
+        lease = ExclusiveTossSessionLease.acquire(arguments.credential_file)
+    except TossSessionLeaseError as error:
+        raise MinuteSupervisorError(error.code) from None
     summaries: list[TossMinuteBatchSummary] = []
-    batches = _bounded_batches(plan, arguments.batch_size)
+    batches = _ordered_batches(plan, arguments.batch_size, priority_scopes)
     try:
         pacer = (
             request_pacer
@@ -213,6 +170,7 @@ def run_minute_supervisor(
             request_pacer=pacer,
         )
         try:
+            executed_scope_count = 0
             for batch_index, scopes in enumerate(batches):
                 try:
                     summary = batch_runner(
@@ -236,16 +194,22 @@ def run_minute_supervisor(
                 _write_batch_progress(
                     output,
                     batch_index=batch_index,
-                    scope_start_index=batch_index * arguments.batch_size,
+                    scope_start_index=executed_scope_count,
                     scope_count=len(scopes),
+                    priority_batch=(batch_index == 0 and bool(priority_scopes)),
                     summary=summary,
                 )
+                executed_scope_count += len(scopes)
         finally:
             session.close()
     finally:
         lease.close()
 
-    return _aggregate_summary(plan.scope_count, summaries)
+    return _aggregate_summary(
+        plan.scope_count,
+        len(priority_scopes),
+        summaries,
+    )
 
 
 def main(values: list[str] | None = None) -> int:
@@ -269,6 +233,7 @@ def main(values: list[str] | None = None) -> int:
             {
                 "eventType": "toss_minute_supervisor_terminal",
                 "scopeCount": summary.scope_count,
+                "priorityScopeCount": summary.priority_scope_count,
                 "batchCount": summary.batch_count,
                 "completedCount": summary.completed_count,
                 "partialCount": summary.partial_count,
@@ -301,6 +266,11 @@ def _validate_arguments(arguments: object) -> None:
         )
     ):
         raise MinuteSupervisorError("supervisor_arguments_invalid")
+    if arguments.retry_queue_path is not None and not isinstance(
+        arguments.retry_queue_path,
+        Path,
+    ):
+        raise MinuteSupervisorError("supervisor_arguments_invalid")
     if not arguments.ledger_root.is_absolute():
         raise MinuteSupervisorError("supervisor_arguments_invalid")
     if (
@@ -331,15 +301,42 @@ def _load_verified_plan(path: Path) -> TossMinuteScopePlan:
         raise MinuteSupervisorError("plan_verification_failed") from None
 
 
-def _bounded_batches(
+def _load_priority_scopes(
+    plan: TossMinuteScopePlan,
+    retry_queue_path: Path | None,
+) -> tuple[CollectionScope, ...]:
+    if retry_queue_path is None:
+        return ()
+    try:
+        queue = load_verified_toss_retry_queue(retry_queue_path)
+    except TossRetryQueueError:
+        raise MinuteSupervisorError("retry_queue_verification_failed") from None
+    scope_by_key = {scope.acquisition_key: scope for scope in plan.scopes}
+    minute_keys = queue.minute_acquisition_keys
+    if len(minute_keys) > _MAX_BATCH_SIZE:
+        raise MinuteSupervisorError("retry_queue_verification_failed")
+    try:
+        return tuple(scope_by_key[key] for key in minute_keys)
+    except KeyError:
+        raise MinuteSupervisorError("retry_queue_verification_failed") from None
+
+
+def _ordered_batches(
     plan: TossMinuteScopePlan,
     batch_size: int,
+    priority_scopes: tuple[CollectionScope, ...],
 ) -> tuple[tuple[CollectionScope, ...], ...]:
-    scopes = plan.scopes
-    return tuple(
-        scopes[index : index + batch_size]
-        for index in range(0, len(scopes), batch_size)
+    priority_keys = {scope.acquisition_key for scope in priority_scopes}
+    remaining = tuple(
+        scope for scope in plan.scopes if scope.acquisition_key not in priority_keys
     )
+    batches = tuple(
+        remaining[index : index + batch_size]
+        for index in range(0, len(remaining), batch_size)
+    )
+    if not priority_scopes:
+        return batches
+    return (priority_scopes, *batches)
 
 
 def _write_batch_progress(
@@ -348,6 +345,7 @@ def _write_batch_progress(
     batch_index: int,
     scope_start_index: int,
     scope_count: int,
+    priority_batch: bool,
     summary: object,
 ) -> None:
     body = {
@@ -355,6 +353,7 @@ def _write_batch_progress(
         "scopeStartIndex": scope_start_index,
         "scopeEndExclusive": scope_start_index + scope_count,
         "scopeCount": scope_count,
+        "priorityBatch": priority_batch,
         "completedCount": _summary_count(summary, "completed_count"),
         "partialCount": _summary_count(summary, "partial_count"),
         "dataUnavailableCount": _summary_count(
@@ -377,10 +376,12 @@ def _write_batch_progress(
 
 def _aggregate_summary(
     scope_count: int,
+    priority_scope_count: int,
     summaries: list[TossMinuteBatchSummary],
 ) -> MinuteSupervisorSummary:
     return MinuteSupervisorSummary(
         scope_count=scope_count,
+        priority_scope_count=priority_scope_count,
         batch_count=len(summaries),
         completed_count=_sum_field(summaries, "completed_count"),
         partial_count=_sum_field(summaries, "partial_count"),
