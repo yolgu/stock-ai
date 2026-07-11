@@ -20,6 +20,7 @@ from rp001_s2.minute_canonicalization import MinuteCanonicalizationError
 from rp001_s2.toss_batch_collection import (
     BatchScopeStatus,
     GlobalMarketDataPacer,
+    PersistentTossMinuteSession,
     TossBatchCollectionError,
     TossMinuteBatchSummary,
     run_toss_minute_batch,
@@ -281,6 +282,55 @@ def _run(
 
 
 class TossMinuteBatchResumeTest(unittest.TestCase):
+    def test_persistent_session_is_shared_across_bounded_batch_transactions(self) -> None:
+        dependencies = _Dependencies()
+        pacer = _RecordingPacer()
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            archive_root = root / "archives"
+            archive_root.mkdir()
+            credential_path = root / "toss-credentials.local.json"
+            session = PersistentTossMinuteSession(
+                credential_file=credential_path,
+                credential_loader=dependencies.load_credentials,
+                session_factory=dependencies.open_session,
+                clock=lambda: datetime(2026, 7, 11, tzinfo=timezone.utc),
+                request_pacer=pacer,
+            )
+
+            first = run_toss_minute_batch(
+                (_scope("AAPL"),),
+                credential_file=credential_path,
+                archive_root=archive_root,
+                ledger_root=(root / "private-ledger").resolve(),
+                clock=lambda: datetime(2026, 7, 11, tzinfo=timezone.utc),
+                request_pacer=pacer,
+                free_bytes=lambda _path: _AVAILABLE_BYTES,
+                shared_session=session,
+                canonicalizer=dependencies.canonicalize,
+            )
+            second = run_toss_minute_batch(
+                (_scope("MSFT", minute_offset=10),),
+                credential_file=credential_path,
+                archive_root=archive_root,
+                ledger_root=(root / "private-ledger").resolve(),
+                clock=lambda: datetime(2026, 7, 11, tzinfo=timezone.utc),
+                request_pacer=pacer,
+                free_bytes=lambda _path: _AVAILABLE_BYTES,
+                shared_session=session,
+                canonicalizer=dependencies.canonicalize,
+            )
+
+            self.assertEqual(first.completed_count, 1)
+            self.assertEqual(second.completed_count, 1)
+            self.assertEqual(dependencies.session_open_count, 1)
+            self.assertEqual(dependencies.session_close_count, 0)
+            self.assertEqual(len(dependencies.credential_paths), 1)
+            self.assertEqual(pacer.calls, 2)
+            session.close()
+
+        self.assertEqual(dependencies.session_close_count, 1)
+
     def test_batch_uses_one_linear_ledger_transaction(self) -> None:
         scopes = tuple(
             _scope(symbol, minute_offset=index * 10)

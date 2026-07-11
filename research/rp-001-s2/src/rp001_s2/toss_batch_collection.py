@@ -146,7 +146,9 @@ class GlobalMarketDataPacer:
             self._last_request_at = now
 
 
-class _LazyTossMinuteSession:
+class PersistentTossMinuteSession:
+    """Own one lazy authenticated session across bounded ledger batches."""
+
     def __init__(
         self,
         *,
@@ -163,8 +165,19 @@ class _LazyTossMinuteSession:
         self._request_pacer = request_pacer
         self._session: TossMinuteSession | None = None
         self._session_open_failure: IntradayRunError | None = None
+        self._closed = False
+
+    @property
+    def credential_file(self) -> Path:
+        return self._credential_file
+
+    @property
+    def request_pacer(self) -> Callable[[], None]:
+        return self._request_pacer
 
     def collect(self, scope: CollectionScope) -> IntradayCandleCollection:
+        if self._closed:
+            raise IntradayRunError("session_closed")
         session = self._session
         if session is None:
             try:
@@ -187,6 +200,9 @@ class _LazyTossMinuteSession:
         )
 
     def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
         session = self._session
         self._session = None
         self._session_open_failure = None
@@ -333,6 +349,7 @@ def run_toss_minute_batch(
     credential_loader: CredentialLoader = load_secure_toss_environment,
     session_factory: TossSessionFactory = open_toss_minute_session,
     canonicalizer: TossCanonicalizer = canonicalize_toss_collection,
+    shared_session: PersistentTossMinuteSession | None = None,
 ) -> TossMinuteBatchSummary:
     """Execute every scope in order and append one terminal event per scope."""
     _validate_batch_input(scopes, credential_file, archive_root, ledger_root)
@@ -341,13 +358,24 @@ def run_toss_minute_batch(
     effective_pacer = (
         request_pacer if request_pacer is not None else GlobalMarketDataPacer()
     )
-    session = _LazyTossMinuteSession(
-        credential_file=credential_file,
-        credential_loader=credential_loader,
-        session_factory=session_factory,
-        clock=clock,
-        request_pacer=effective_pacer,
-    )
+    if shared_session is None:
+        session = PersistentTossMinuteSession(
+            credential_file=credential_file,
+            credential_loader=credential_loader,
+            session_factory=session_factory,
+            clock=clock,
+            request_pacer=effective_pacer,
+        )
+        owns_session = True
+    else:
+        if (
+            not isinstance(shared_session, PersistentTossMinuteSession)
+            or shared_session.credential_file != credential_file
+            or shared_session.request_pacer is not effective_pacer
+        ):
+            raise TossBatchCollectionError("shared_session_mismatch")
+        session = shared_session
+        owns_session = False
     terminals: list[TossMinuteScopeTerminal] = []
 
     try:
@@ -367,7 +395,8 @@ def run_toss_minute_batch(
                 )
                 terminals.append(_terminal(scope_index, outcome, entry))
     finally:
-        session.close()
+        if owns_session:
+            session.close()
 
     terminal_tuple = tuple(terminals)
     return TossMinuteBatchSummary(

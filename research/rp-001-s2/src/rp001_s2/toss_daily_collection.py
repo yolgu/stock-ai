@@ -252,12 +252,20 @@ class TossDailyBatchSummary:
         return self._count(DailyBatchScopeStatus.INVALID)
 
     @property
+    def blocked_storage_capacity_count(self) -> int:
+        return self._count(DailyBatchScopeStatus.BLOCKED_STORAGE_CAPACITY)
+
+    @property
     def resumed_count(self) -> int:
         return sum(value.resumed_from_verified_archive for value in self.terminals)
 
     @property
     def total_row_count(self) -> int:
         return sum(value.row_count for value in self.terminals)
+
+    @property
+    def total_capture_count(self) -> int:
+        return sum(value.capture_count for value in self.terminals)
 
     def _count(self, status: DailyBatchScopeStatus) -> int:
         return sum(value.status is status for value in self.terminals)
@@ -376,6 +384,7 @@ def _resume_or_collect(
     pacer: Callable[[], None],
     canonicalizer: Canonicalizer,
 ) -> TossDailyScopeTerminal:
+    captures: tuple[RawHttpCapture, ...] = ()
     try:
         _validate_scope(scope)
         existing = storage.find_verified_archive(scope)
@@ -394,6 +403,7 @@ def _resume_or_collect(
                 failure_evidence=None,
             )
         collection = session.collect(scope, pacer)
+        captures = collection.captures
         rows = canonicalizer(scope, collection)
         completion = _completion(scope, collection, rows)
         archive = storage.write_archive(
@@ -414,14 +424,20 @@ def _resume_or_collect(
             failure_evidence=None,
         )
     except TossDailyRunError as error:
-        return _failure_terminal(scope_index, scope, storage, error.code, error.captures)
+        return _failure_terminal(
+            scope_index,
+            scope,
+            storage,
+            error.code,
+            error.captures or captures,
+        )
     except DailyCanonicalizationError as error:
         return _failure_terminal(
             scope_index,
             scope,
             storage,
             error.code,
-            (),
+            captures,
             status=DailyBatchScopeStatus.INVALID,
         )
     except DailyArchiveStorageError as error:
@@ -435,7 +451,7 @@ def _resume_or_collect(
             scope,
             storage,
             error.code,
-            (),
+            captures,
             status=status,
         )
     except Exception:
@@ -444,7 +460,7 @@ def _resume_or_collect(
             scope,
             storage,
             "unexpected_failure",
-            (),
+            captures,
         )
 
 

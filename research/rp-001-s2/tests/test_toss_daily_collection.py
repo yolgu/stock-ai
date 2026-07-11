@@ -16,6 +16,7 @@ from rp001.toss_research_collector import (
 )
 from rp001_s2.archive_contract import CollectionScope, SampleRole
 from rp001_s2.daily_archive_storage import CanonicalDailyBar
+from rp001_s2.toss_daily_canonicalization import DailyCanonicalizationError
 from rp001_s2.toss_daily_collection import (
     DailyBatchScopeStatus,
     DailyMarketDataPacer,
@@ -283,6 +284,60 @@ class TossDailyCollectionTest(unittest.TestCase):
             evidence = summary.terminals[0].failure_evidence
             self.assertIsNotNone(evidence)
             self.assertTrue(evidence.manifest_path.is_file())
+
+    def test_canonicalization_failure_preserves_every_collected_capture(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            credential = root / "credentials.json"
+            credential.write_text("fixture", encoding="utf-8")
+
+            summary = run_toss_daily_batch(
+                (_scope(),),
+                credential_file=credential,
+                archive_root=root / "archives",
+                ledger_root=(root / "ledger").resolve(),
+                clock=lambda: datetime(2026, 7, 12, tzinfo=timezone.utc),
+                request_pacer=lambda: None,
+                free_bytes=lambda _path: _FREE_BYTES,
+                credential_loader=lambda _path: {"one": "value"},
+                session_factory=lambda **_arguments: _Session(),
+                canonicalizer=lambda _scope, _collection: (
+                    (_ for _ in ()).throw(
+                        DailyCanonicalizationError("conflicting_duplicate")
+                    )
+                ),
+            )
+
+            terminal = summary.terminals[0]
+            self.assertEqual(terminal.status, DailyBatchScopeStatus.INVALID)
+            self.assertEqual(terminal.capture_count, 1)
+            self.assertIsNotNone(terminal.failure_evidence)
+
+    def test_storage_failure_retains_capture_count_even_without_capacity_for_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            credential = root / "credentials.json"
+            credential.write_text("fixture", encoding="utf-8")
+
+            summary = run_toss_daily_batch(
+                (_scope(),),
+                credential_file=credential,
+                archive_root=root / "archives",
+                ledger_root=(root / "ledger").resolve(),
+                clock=lambda: datetime(2026, 7, 12, tzinfo=timezone.utc),
+                request_pacer=lambda: None,
+                free_bytes=lambda _path: 0,
+                credential_loader=lambda _path: {"one": "value"},
+                session_factory=lambda **_arguments: _Session(),
+                canonicalizer=_canonicalize,
+            )
+
+            terminal = summary.terminals[0]
+            self.assertEqual(
+                terminal.status,
+                DailyBatchScopeStatus.BLOCKED_STORAGE_CAPACITY,
+            )
+            self.assertEqual(terminal.capture_count, 1)
 
 
 if __name__ == "__main__":

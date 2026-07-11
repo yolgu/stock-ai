@@ -1156,6 +1156,45 @@ class CandleCollectionContractTest(TossResearchCollectorTestCase):
         )
         self.assert_capture_bodies(error, [first_response.body, second_response.body])
 
+    def test_empty_terminal_page_completes_without_synthesizing_rows(self) -> None:
+        response = candle_response([])
+        collector, transport = collector_for([response])
+
+        result = self.collect(
+            lambda: collector.collect_candles(
+                "AAPL",
+                date(2026, 6, 1),
+                date(2026, 6, 30),
+                INITIAL_BEFORE,
+                True,
+            )
+        )
+
+        self.assertEqual(result.analysis_rows, ())
+        self.assertEqual(result.audit_only_rows, ())
+        self.assertEqual(len(result.captures), 1)
+        self.assertEqual(len(transport.requests), 1)
+
+    def test_overlap_only_terminal_page_completes_with_one_canonical_row(self) -> None:
+        only_row = candle("2026-06-30T00:00:00Z")
+        first_response = candle_response([only_row], next_before="cursor-2")
+        terminal_response = candle_response([only_row])
+        collector, transport = collector_for([first_response, terminal_response])
+
+        result = self.collect(
+            lambda: collector.collect_candles(
+                "AAPL",
+                date(2026, 6, 1),
+                date(2026, 6, 30),
+                INITIAL_BEFORE,
+                True,
+            )
+        )
+
+        self.assertEqual(len(result.analysis_rows), 1)
+        self.assertEqual(len(result.captures), 2)
+        self.assertEqual(len(transport.requests), 2)
+
     def test_fixed_page_limit_rejects_unbounded_provider_cursor_chain(self) -> None:
         responses: list[HttpResponse] = []
         for page_index in range(20):

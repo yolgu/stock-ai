@@ -175,6 +175,42 @@ def build_toss_minute_scope_plan(
     )
 
 
+def canonical_minute_plan_bytes(plan: TossMinuteScopePlan) -> bytes:
+    if not isinstance(plan, TossMinuteScopePlan):
+        raise ValueError("minute_scope_plan_invalid")
+    return _canonical_json_bytes(plan.to_canonical_body())
+
+
+def parse_toss_minute_scope_plan(source: bytes) -> TossMinuteScopePlan:
+    """Reconstruct and verify every acquisition identity in a frozen plan."""
+    try:
+        value = json.loads(source.decode("utf-8"))
+        if not isinstance(value, dict) or _canonical_json_bytes(value) != source:
+            raise ValueError
+        raw_instruments = value["instruments"]
+        if not isinstance(raw_instruments, list):
+            raise ValueError
+        instruments = tuple(
+            (entry["instrumentId"], entry["symbol"])
+            for entry in raw_instruments
+            if isinstance(entry, dict)
+            and set(entry) == {"instrumentId", "symbol"}
+        )
+        plan = build_toss_minute_scope_plan(
+            instruments=instruments,
+            start_at=_parse_utc(value["startAt"]),
+            end_at=_parse_utc(value["endAt"]),
+            instrument_master_sha256=value["instrumentMasterSha256"],
+            sample_role=SampleRole(value["sampleRole"]),
+            contract_version=TossMinutePlanVersion(value["contractVersion"]),
+        )
+    except (KeyError, TypeError, ValueError, UnicodeError):
+        raise ValueError("minute_scope_plan_invalid") from None
+    if plan.to_canonical_body() != value:
+        raise ValueError("minute_scope_plan_invalid")
+    return plan
+
+
 def _validate_instruments(
     instruments: object,
 ) -> tuple[tuple[str, str], ...]:
@@ -230,6 +266,17 @@ def _canonical_json_bytes(value: dict[str, object]) -> bytes:
 
 def _format_utc(value: datetime) -> str:
     return value.isoformat(timespec="seconds").replace("+00:00", "Z")
+
+
+def _parse_utc(value: object) -> datetime:
+    if not isinstance(value, str):
+        raise ValueError
+    parsed = datetime.fromisoformat(
+        value[:-1] + "+00:00" if value.endswith("Z") else value
+    )
+    if parsed.tzinfo is None or parsed.utcoffset() != timedelta(0):
+        raise ValueError
+    return parsed
 
 
 def _is_utc(value: object) -> bool:
