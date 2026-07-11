@@ -28,6 +28,7 @@ from rp001_s2.archive_storage import (
 
 
 _SCHEMA_VERSION = "rp001-s2-immutable-daily-archive.v1"
+_FAILURE_SCHEMA_VERSION = "rp001-s2-immutable-daily-failure-evidence.v1"
 _CANONICAL_PATH = Path("canonical/daily-bars.parquet")
 _MINIMUM_FREE_BYTES = 50 * 1024**3
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
@@ -138,6 +139,16 @@ class StoredDailyArchive:
     manifest_sha256_path: Path
 
 
+@dataclass(frozen=True)
+class StoredDailyFailureEvidence:
+    acquisition_key: str
+    evidence_digest: str
+    evidence_directory: Path
+    raw_paths: tuple[Path, ...]
+    manifest_path: Path
+    manifest_sha256_path: Path
+
+
 class ImmutableDailyArchiveStorage:
     def __init__(
         self,
@@ -231,6 +242,138 @@ class ImmutableDailyArchiveStorage:
             self._verify_archive(stored)
         except Exception:
             raise DailyArchiveStorageError("archive_verification_failed") from None
+
+    def write_failure_evidence(
+        self,
+        *,
+        scope: CollectionScope,
+        captures: tuple[RawHttpCapture, ...],
+        error_code: str,
+    ) -> StoredDailyFailureEvidence:
+        if (
+            not isinstance(scope, CollectionScope)
+            or scope.interval != "1d"
+            or type(captures) is not tuple
+            or any(not isinstance(capture, RawHttpCapture) for capture in captures)
+            or not isinstance(error_code, str)
+            or not error_code
+        ):
+            raise DailyArchiveStorageError("failure_evidence_invalid")
+        bodies = tuple(_decode_capture(capture) for capture in captures)
+        digest = hashlib.sha256(
+            _canonical_json_bytes(
+                {
+                    "scope": scope.acquisition_identity_body(),
+                    "errorCode": error_code,
+                    "captureSha256s": [capture.body_sha256 for capture in captures],
+                }
+            )
+        ).hexdigest()
+        directory = self._root / "failure-evidence" / scope.acquisition_key / digest
+        stored = StoredDailyFailureEvidence(
+            acquisition_key=scope.acquisition_key,
+            evidence_digest=digest,
+            evidence_directory=directory,
+            raw_paths=tuple(
+                directory / f"raw/{ordinal:06d}.json.zst"
+                for ordinal in range(len(captures))
+            ),
+            manifest_path=directory / "manifest.json",
+            manifest_sha256_path=directory / "manifest.json.sha256",
+        )
+        if directory.exists():
+            self.verify_failure_evidence(stored)
+            return stored
+        parent = directory.parent
+        parent.mkdir(parents=True, exist_ok=True)
+        if self._free_bytes(self._root) < _MINIMUM_FREE_BYTES:
+            raise DailyArchiveStorageError("blocked_storage_capacity")
+        staging = Path(tempfile.mkdtemp(prefix=f".{digest}.", dir=parent))
+        try:
+            (staging / "raw").mkdir()
+            compressor = zstandard.ZstdCompressor(level=9)
+            artifacts: list[dict[str, object]] = []
+            for ordinal, (capture, body) in enumerate(
+                zip(captures, bodies, strict=True)
+            ):
+                compressed = compressor.compress(body)
+                relative = Path(f"raw/{ordinal:06d}.json.zst")
+                _write_new(staging / relative, compressed)
+                artifacts.append(
+                    {
+                        "captureOrdinal": ordinal,
+                        "endpointId": capture.endpoint_id,
+                        "method": capture.method,
+                        "status": capture.status,
+                        "receivedAt": capture.received_at,
+                        "path": relative.as_posix(),
+                        "uncompressedSha256": capture.body_sha256,
+                        "storedSha256": hashlib.sha256(compressed).hexdigest(),
+                    }
+                )
+            manifest = {
+                "schemaVersion": _FAILURE_SCHEMA_VERSION,
+                "acquisitionKey": scope.acquisition_key,
+                "evidenceDigest": digest,
+                "scope": scope.to_canonical_body(),
+                "errorCode": error_code,
+                "rawArtifacts": artifacts,
+            }
+            source = _canonical_json_bytes(manifest)
+            _write_new(staging / "manifest.json", source)
+            _write_new(
+                staging / "manifest.json.sha256",
+                f"{hashlib.sha256(source).hexdigest()}\n".encode("ascii"),
+            )
+            os.rename(staging, directory)
+            self.verify_failure_evidence(stored)
+            return stored
+        except FileExistsError:
+            self.verify_failure_evidence(stored)
+            return stored
+        except DailyArchiveStorageError:
+            raise
+        except Exception:
+            raise DailyArchiveStorageError("failure_evidence_write_failed") from None
+        finally:
+            if staging.exists():
+                shutil.rmtree(staging, ignore_errors=True)
+
+    def verify_failure_evidence(
+        self,
+        stored: StoredDailyFailureEvidence,
+    ) -> None:
+        try:
+            source = _read_regular(stored.manifest_path)
+            digest = hashlib.sha256(source).hexdigest()
+            if _read_regular(stored.manifest_sha256_path) != f"{digest}\n".encode("ascii"):
+                raise ValueError
+            manifest = json.loads(source.decode("utf-8"))
+            if (
+                _canonical_json_bytes(manifest) != source
+                or manifest["schemaVersion"] != _FAILURE_SCHEMA_VERSION
+                or manifest["acquisitionKey"] != stored.acquisition_key
+                or manifest["evidenceDigest"] != stored.evidence_digest
+                or len(manifest["rawArtifacts"]) != len(stored.raw_paths)
+            ):
+                raise ValueError
+            decompressor = zstandard.ZstdDecompressor()
+            for ordinal, (artifact, path) in enumerate(
+                zip(manifest["rawArtifacts"], stored.raw_paths, strict=True)
+            ):
+                compressed = _read_regular(path)
+                body = decompressor.decompress(compressed)
+                if (
+                    artifact["captureOrdinal"] != ordinal
+                    or hashlib.sha256(compressed).hexdigest() != artifact["storedSha256"]
+                    or hashlib.sha256(body).hexdigest()
+                    != artifact["uncompressedSha256"]
+                ):
+                    raise ValueError
+        except Exception:
+            raise DailyArchiveStorageError(
+                "failure_evidence_verification_failed"
+            ) from None
 
     def _write_staging(
         self,
