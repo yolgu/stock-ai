@@ -26,6 +26,7 @@ from rp001_s2.toss_forward_archive import (
     ImmutableTossForwardStorage,
     StoredForwardArchive,
     StoredForwardFailureEvidence,
+    StoredForwardTradeArchive,
 )
 from rp001_s2.toss_forward_microstructure import (
     ForwardMicrostructureError,
@@ -50,6 +51,7 @@ class TossForwardCaptureRunError(ValueError):
 
 class ForwardCaptureStatus(str, Enum):
     COMPLETED = "completed"
+    PARTIAL = "partial"
     FAILED = "failed"
 
 
@@ -82,6 +84,9 @@ class TossForwardSymbolOutcome:
     stored_archive: StoredForwardArchive | None = None
     failure_evidence: StoredForwardFailureEvidence | None = None
     error_code: str | None = None
+    trade_archive: StoredForwardTradeArchive | None = None
+    trade_row_count: int = 0
+    orderbook_error_code: str | None = None
 
 
 @dataclass(frozen=True)
@@ -175,8 +180,11 @@ def _capture_symbol(
 ) -> TossForwardSymbolOutcome:
     safe_captures: tuple[RawHttpCapture, ...] = ()
     trade_stream: SampledTradeStream | None = None
+    trade_archive: StoredForwardTradeArchive | None = None
     orderbook_snapshot: SampledOrderbookSnapshot | None = None
-    error_code: str | None = None
+    trade_error_code: str | None = None
+    orderbook_error_code: str | None = None
+    orderbook_failure_captures: tuple[RawHttpCapture, ...] = ()
     try:
         trade_stream = collector.collect_trade_polls(
             symbol=symbol,
@@ -187,7 +195,17 @@ def _capture_symbol(
             sensitive_values,
             prior=(),
         )
+        trade_archive = storage.write_trade_archive(trade_stream)
     except _SensitiveResponseMaterial:
+        if trade_archive is not None and trade_stream is not None:
+            return _partial_outcome(
+                storage,
+                symbol,
+                trade_archive,
+                len(trade_stream.observations),
+                "sensitive_response_material",
+                (),
+            )
         return _failure_outcome(
             storage,
             symbol,
@@ -195,7 +213,7 @@ def _capture_symbol(
             (),
         )
     except ForwardMicrostructureError as error:
-        error_code = error.code
+        trade_error_code = error.code
         try:
             safe_captures = _require_safe_captures(
                 _combine_captures(safe_captures, error.captures),
@@ -221,6 +239,15 @@ def _capture_symbol(
             prior=safe_captures,
         )
     except _SensitiveResponseMaterial:
+        if trade_archive is not None and trade_stream is not None:
+            return _partial_outcome(
+                storage,
+                symbol,
+                trade_archive,
+                len(trade_stream.observations),
+                "sensitive_response_material",
+                (),
+            )
         return _failure_outcome(
             storage,
             symbol,
@@ -228,30 +255,66 @@ def _capture_symbol(
             (),
         )
     except ForwardMicrostructureError as error:
-        if error_code is None:
-            error_code = error.code
-        try:
-            safe_captures = _require_safe_captures(
-                _combine_captures(safe_captures, error.captures),
-                sensitive_values,
-                prior=(),
-            )
-        except _SensitiveResponseMaterial:
-            return _failure_outcome(
-                storage,
-                symbol,
-                "sensitive_response_material",
-                (),
-            )
+        orderbook_error_code = error.code
+        if trade_archive is not None and trade_stream is not None:
+            try:
+                orderbook_failure_captures = _require_safe_captures(
+                    error.captures,
+                    sensitive_values,
+                    prior=(),
+                )
+            except _SensitiveResponseMaterial:
+                return _partial_outcome(
+                    storage,
+                    symbol,
+                    trade_archive,
+                    len(trade_stream.observations),
+                    "sensitive_response_material",
+                    (),
+                )
+        else:
+            try:
+                safe_captures = _require_safe_captures(
+                    _combine_captures(safe_captures, error.captures),
+                    sensitive_values,
+                    prior=(),
+                )
+            except _SensitiveResponseMaterial:
+                return _failure_outcome(
+                    storage,
+                    symbol,
+                    "sensitive_response_material",
+                    (),
+                )
 
-    if error_code is not None:
+    if trade_error_code is not None:
         return _failure_outcome(
             storage,
             symbol,
-            error_code,
+            trade_error_code,
             safe_captures,
         )
-    if trade_stream is None or orderbook_snapshot is None:
+    if orderbook_error_code is not None:
+        if trade_stream is None or trade_archive is None:
+            return _failure_outcome(
+                storage,
+                symbol,
+                "forward_capture_incomplete",
+                safe_captures,
+            )
+        return _partial_outcome(
+            storage,
+            symbol,
+            trade_archive,
+            len(trade_stream.observations),
+            orderbook_error_code,
+            orderbook_failure_captures,
+        )
+    if (
+        trade_stream is None
+        or trade_archive is None
+        or orderbook_snapshot is None
+    ):
         return _failure_outcome(
             storage,
             symbol,
@@ -266,6 +329,8 @@ def _capture_symbol(
         symbol=symbol,
         status=ForwardCaptureStatus.COMPLETED,
         stored_archive=stored,
+        trade_archive=trade_archive,
+        trade_row_count=len(trade_stream.observations),
     )
 
 
@@ -320,6 +385,30 @@ def _failure_outcome(
         status=ForwardCaptureStatus.FAILED,
         failure_evidence=failure_evidence,
         error_code=error_code,
+    )
+
+
+def _partial_outcome(
+    storage: ImmutableTossForwardStorage,
+    symbol: str,
+    trade_archive: StoredForwardTradeArchive,
+    trade_row_count: int,
+    orderbook_error_code: str,
+    captures: tuple[RawHttpCapture, ...],
+) -> TossForwardSymbolOutcome:
+    failure_evidence = storage.write_failure_evidence(
+        symbol=symbol,
+        error_code=orderbook_error_code,
+        captures=captures,
+    )
+    return TossForwardSymbolOutcome(
+        symbol=symbol,
+        status=ForwardCaptureStatus.PARTIAL,
+        trade_archive=trade_archive,
+        failure_evidence=failure_evidence,
+        error_code=orderbook_error_code,
+        trade_row_count=trade_row_count,
+        orderbook_error_code=orderbook_error_code,
     )
 
 

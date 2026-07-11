@@ -153,7 +153,14 @@ class TossForwardArchiveContractTest(unittest.TestCase):
         self.assertTrue(hasattr(archive, "ImmutableTossForwardStorage"))
         self.assertTrue(hasattr(archive, "ForwardArchiveError"))
         self.assertTrue(hasattr(archive, "StoredForwardArchive"))
+        self.assertTrue(hasattr(archive, "StoredForwardTradeArchive"))
         self.assertTrue(hasattr(archive, "StoredForwardFailureEvidence"))
+        self.assertTrue(
+            hasattr(archive.ImmutableTossForwardStorage, "write_trade_archive")
+        )
+        self.assertTrue(
+            hasattr(archive.ImmutableTossForwardStorage, "verify_trade_archive")
+        )
 
     def test_writes_exact_raw_canonical_parquet_and_idempotent_manifest(self) -> None:
         from rp001_s2.toss_forward_archive import ImmutableTossForwardStorage
@@ -283,6 +290,133 @@ class TossForwardArchiveContractTest(unittest.TestCase):
             }
             self.assertEqual(after, before)
             storage.verify_archive(stored)
+
+    def test_trade_stream_has_independent_verified_idempotent_archive(self) -> None:
+        from rp001_s2.toss_forward_archive import ImmutableTossForwardStorage
+
+        trade_stream, _orderbook_snapshot = _success_evidence()
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            _private_root(root)
+            storage = ImmutableTossForwardStorage(
+                root,
+                free_bytes=lambda _path: _AVAILABLE_BYTES,
+            )
+
+            stored = storage.write_trade_archive(trade_stream)
+            before = {
+                path.relative_to(stored.archive_directory): hashlib.sha256(
+                    path.read_bytes()
+                ).hexdigest()
+                for path in stored.archive_directory.rglob("*")
+                if path.is_file()
+            }
+            repeated = storage.write_trade_archive(trade_stream)
+
+            self.assertEqual(repeated, stored)
+            self.assertEqual(
+                stored.archive_directory,
+                root / "trade-success" / stored.content_identity,
+            )
+            self.assertEqual(
+                zstandard.ZstdDecompressor().decompress(
+                    stored.raw_path.read_bytes()
+                ),
+                base64.b64decode(trade_stream.captures[0].body_base64),
+            )
+            rows = parquet.read_table(stored.trades_path).to_pylist()
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0]["price_lexeme"], "250.100")
+            self.assertEqual(
+                rows[0]["completeness"],
+                "not_complete_exchange_tape",
+            )
+            manifest = json.loads(stored.manifest_path.read_bytes())
+            self.assertEqual(
+                manifest["schemaVersion"],
+                "rp001-s2-toss-forward-trade-archive.v1",
+            )
+            self.assertEqual(manifest["artifactKind"], "sampled_trade_stream")
+            identity = {
+                "schemaVersion": "rp001-s2-toss-forward-trade-archive.v1",
+                "identityDomain": "rp001_s2.toss_forward_trade_archive",
+                "symbol": "TSLA",
+                "capture": {
+                    "endpointId": trade_stream.captures[0].endpoint_id,
+                    "receivedAt": trade_stream.captures[0].received_at,
+                    "bodySha256": trade_stream.captures[0].body_sha256,
+                },
+            }
+            expected_identity = hashlib.sha256(
+                json.dumps(
+                    identity,
+                    allow_nan=False,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+            ).hexdigest()
+            self.assertEqual(stored.content_identity, expected_identity)
+            self.assertEqual(manifest["contentIdentity"], expected_identity)
+            storage.verify_trade_archive(stored)
+            after = {
+                path.relative_to(stored.archive_directory): hashlib.sha256(
+                    path.read_bytes()
+                ).hexdigest()
+                for path in stored.archive_directory.rglob("*")
+                if path.is_file()
+            }
+            self.assertEqual(after, before)
+
+    def test_trade_archive_rejects_symlinked_trade_success_parent(self) -> None:
+        from rp001_s2.toss_forward_archive import (
+            ForwardArchiveError,
+            ImmutableTossForwardStorage,
+        )
+
+        trade_stream, _orderbook_snapshot = _success_evidence()
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary_root = Path(temporary_directory)
+            external_root = temporary_root / "external"
+            target_root = temporary_root / "target"
+            external_root.mkdir(mode=0o700)
+            target_root.mkdir(mode=0o700)
+            external_storage = ImmutableTossForwardStorage(
+                external_root,
+                free_bytes=lambda _path: _AVAILABLE_BYTES,
+            )
+            external_stored = external_storage.write_trade_archive(trade_stream)
+            (target_root / "trade-success").symlink_to(
+                external_root / "trade-success",
+                target_is_directory=True,
+            )
+            target_storage = ImmutableTossForwardStorage(
+                target_root,
+                free_bytes=lambda _path: _AVAILABLE_BYTES,
+            )
+            linked_directory = (
+                target_root
+                / "trade-success"
+                / external_stored.content_identity
+            )
+            linked_stored = replace(
+                external_stored,
+                archive_directory=linked_directory,
+                raw_path=linked_directory / "raw/000000.json.zst",
+                trades_path=linked_directory / "canonical/trades.parquet",
+                manifest_path=linked_directory / "manifest.json",
+                manifest_sha256_path=linked_directory / "manifest.json.sha256",
+            )
+
+            with self.assertRaises(ForwardArchiveError) as write_failure:
+                target_storage.write_trade_archive(trade_stream)
+            self.assertEqual(write_failure.exception.code, "forward_archive_write_failed")
+            with self.assertRaises(ForwardArchiveError) as verify_failure:
+                target_storage.verify_trade_archive(linked_stored)
+            self.assertEqual(
+                verify_failure.exception.code,
+                "forward_trade_archive_verification_failed",
+            )
 
     def test_rejects_same_identity_conflict_and_detects_tampering(self) -> None:
         from rp001_s2.toss_forward_archive import (

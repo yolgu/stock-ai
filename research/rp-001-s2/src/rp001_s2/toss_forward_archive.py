@@ -36,10 +36,13 @@ from rp001_s2.toss_forward_microstructure import (
 
 _SCHEMA_VERSION = "rp001-s2-toss-forward-archive.v1"
 _IDENTITY_DOMAIN = "rp001_s2.toss_forward_archive"
+_TRADE_SCHEMA_VERSION = "rp001-s2-toss-forward-trade-archive.v1"
+_TRADE_IDENTITY_DOMAIN = "rp001_s2.toss_forward_trade_archive"
 _FAILURE_SCHEMA_VERSION = "rp001-s2-toss-forward-failure-evidence.v1"
 _FAILURE_IDENTITY_DOMAIN = "rp001_s2.toss_forward_failure_evidence"
 _MINIMUM_FREE_BYTES = 50 * 1024**3
 _SUCCESS_DIRECTORY = Path("success")
+_TRADE_SUCCESS_DIRECTORY = Path("trade-success")
 _TRADES_PATH = Path("canonical/trades.parquet")
 _ORDERBOOK_PATH = Path("canonical/orderbook-levels.parquet")
 _MANIFEST_PATH = Path("manifest.json")
@@ -128,6 +131,17 @@ class StoredForwardArchive:
 
 
 @dataclass(frozen=True)
+class StoredForwardTradeArchive:
+    symbol: str
+    content_identity: str
+    archive_directory: Path
+    raw_path: Path
+    trades_path: Path
+    manifest_path: Path
+    manifest_sha256_path: Path
+
+
+@dataclass(frozen=True)
 class StoredForwardFailureEvidence:
     symbol: str
     evidence_digest: str
@@ -140,6 +154,13 @@ class StoredForwardFailureEvidence:
 @dataclass(frozen=True)
 class _PreparedArchive:
     stored: StoredForwardArchive
+    artifact_bytes: tuple[tuple[Path, bytes], ...]
+    manifest_bytes: bytes
+
+
+@dataclass(frozen=True)
+class _PreparedTradeArchive:
+    stored: StoredForwardTradeArchive
     artifact_bytes: tuple[tuple[Path, bytes], ...]
     manifest_bytes: bytes
 
@@ -201,12 +222,57 @@ class ImmutableTossForwardStorage:
         self.verify_archive(prepared.stored)
         return prepared.stored
 
+    def write_trade_archive(
+        self,
+        trade_stream: SampledTradeStream,
+    ) -> StoredForwardTradeArchive:
+        prepared = _prepare_trade_archive(self._root, trade_stream)
+        trade_root = self._root / _TRADE_SUCCESS_DIRECTORY
+        if prepared.stored.archive_directory.exists():
+            try:
+                _require_real_private_directory(trade_root)
+            except (OSError, ValueError):
+                raise ForwardArchiveError(
+                    "forward_archive_write_failed"
+                ) from None
+            return self._verified_identical_trade_archive(prepared)
+
+        self._require_capacity()
+        try:
+            trade_root.mkdir(mode=0o700, exist_ok=True)
+            _require_real_private_directory(trade_root)
+            prepared.stored.archive_directory.mkdir(mode=0o700)
+            (prepared.stored.archive_directory / "raw").mkdir(mode=0o700)
+            (prepared.stored.archive_directory / "canonical").mkdir(mode=0o700)
+        except FileExistsError:
+            return self._verified_identical_trade_archive(prepared)
+        except (OSError, ValueError):
+            raise ForwardArchiveError("forward_archive_write_failed") from None
+
+        for relative_path, body in prepared.artifact_bytes:
+            self._write_new(prepared.stored.archive_directory / relative_path, body)
+        self._write_new(prepared.stored.manifest_path, prepared.manifest_bytes)
+        self._write_new(
+            prepared.stored.manifest_sha256_path,
+            _sidecar_bytes(hashlib.sha256(prepared.manifest_bytes).hexdigest()),
+        )
+        self.verify_trade_archive(prepared.stored)
+        return prepared.stored
+
     def verify_archive(self, stored: StoredForwardArchive) -> None:
         try:
             self._verify_archive(stored)
         except Exception:
             raise ForwardArchiveError(
                 "forward_archive_verification_failed"
+            ) from None
+
+    def verify_trade_archive(self, stored: StoredForwardTradeArchive) -> None:
+        try:
+            self._verify_trade_archive(stored)
+        except Exception:
+            raise ForwardArchiveError(
+                "forward_trade_archive_verification_failed"
             ) from None
 
     def write_failure_evidence(
@@ -366,6 +432,70 @@ class ImmutableTossForwardStorage:
         ):
             raise ValueError
 
+    def _verify_trade_archive(self, stored: StoredForwardTradeArchive) -> None:
+        self._require_root()
+        if not isinstance(stored, StoredForwardTradeArchive):
+            raise ValueError
+        expected = _stored_trade_archive(
+            self._root,
+            stored.symbol,
+            stored.content_identity,
+        )
+        if stored != expected:
+            raise ValueError
+        _require_real_private_directory(
+            self._root / _TRADE_SUCCESS_DIRECTORY
+        )
+        _require_trade_archive_layout(stored)
+
+        manifest_bytes = stored.manifest_path.read_bytes()
+        if (
+            stored.manifest_sha256_path.read_bytes()
+            != _sidecar_bytes(hashlib.sha256(manifest_bytes).hexdigest())
+        ):
+            raise ValueError
+        manifest = _load_canonical_json(manifest_bytes)
+        if not isinstance(manifest, dict) or set(manifest) != {
+            "schemaVersion",
+            "identityDomain",
+            "contentIdentity",
+            "symbol",
+            "artifactKind",
+            "claims",
+            "rawArtifact",
+            "canonicalArtifact",
+        }:
+            raise ValueError
+        if (
+            manifest["schemaVersion"] != _TRADE_SCHEMA_VERSION
+            or manifest["identityDomain"] != _TRADE_IDENTITY_DOMAIN
+            or manifest["contentIdentity"] != stored.content_identity
+            or manifest["symbol"] != stored.symbol
+            or manifest["artifactKind"] != "sampled_trade_stream"
+            or manifest["claims"] != _fixed_claims("sampled_trade_stream")
+        ):
+            raise ValueError
+        capture = _verify_raw_artifact(
+            stored.raw_path,
+            manifest["rawArtifact"],
+            0,
+            stored.symbol,
+        )
+        if _trade_content_identity(stored.symbol, capture) != stored.content_identity:
+            raise ValueError
+        _verify_parquet_artifact(
+            stored.trades_path,
+            manifest["canonicalArtifact"],
+            _TRADES_PATH,
+            _TRADE_SCHEMA,
+        )
+        _verify_trade_rows(stored.trades_path, stored.symbol, capture)
+        expected_stream = _reconstruct_trade_stream(stored.symbol, capture)
+        if not parquet.read_table(stored.trades_path).equals(
+            _trade_table(expected_stream)
+        ):
+            raise ValueError
+
     def _verify_failure_evidence(
         self,
         stored: StoredForwardFailureEvidence,
@@ -464,6 +594,27 @@ class ImmutableTossForwardStorage:
         prepared: _PreparedArchive,
     ) -> StoredForwardArchive:
         self.verify_archive(prepared.stored)
+        expected_files = {
+            relative_path: body
+            for relative_path, body in prepared.artifact_bytes
+        }
+        expected_files[_MANIFEST_PATH] = prepared.manifest_bytes
+        expected_files[_MANIFEST_SHA256_PATH] = _sidecar_bytes(
+            hashlib.sha256(prepared.manifest_bytes).hexdigest()
+        )
+        if any(
+            (prepared.stored.archive_directory / relative_path).read_bytes()
+            != body
+            for relative_path, body in expected_files.items()
+        ):
+            raise ForwardArchiveError("forward_archive_conflict")
+        return prepared.stored
+
+    def _verified_identical_trade_archive(
+        self,
+        prepared: _PreparedTradeArchive,
+    ) -> StoredForwardTradeArchive:
+        self.verify_trade_archive(prepared.stored)
         expected_files = {
             relative_path: body
             for relative_path, body in prepared.artifact_bytes
@@ -597,6 +748,46 @@ def _prepare_archive(
     return _PreparedArchive(
         stored=stored,
         artifact_bytes=artifact_bytes,
+        manifest_bytes=_canonical_json_bytes(manifest),
+    )
+
+
+def _prepare_trade_archive(
+    root: Path,
+    trade_stream: SampledTradeStream,
+) -> _PreparedTradeArchive:
+    symbol, capture = _validate_trade_stream(trade_stream)
+    raw_body = _capture_body(capture)
+    compressed = zstandard.ZstdCompressor(level=9).compress(raw_body)
+    trade_table = _trade_table(trade_stream)
+    trade_bytes = _parquet_bytes(trade_table)
+    content_identity = _trade_content_identity(symbol, capture)
+    stored = _stored_trade_archive(root, symbol, content_identity)
+    manifest = {
+        "schemaVersion": _TRADE_SCHEMA_VERSION,
+        "identityDomain": _TRADE_IDENTITY_DOMAIN,
+        "contentIdentity": content_identity,
+        "symbol": symbol,
+        "artifactKind": "sampled_trade_stream",
+        "claims": _claims(trade_stream),
+        "rawArtifact": _raw_artifact_body(
+            0,
+            capture,
+            raw_body,
+            compressed,
+        ),
+        "canonicalArtifact": _parquet_artifact_body(
+            _TRADES_PATH,
+            trade_table.num_rows,
+            trade_bytes,
+        ),
+    }
+    return _PreparedTradeArchive(
+        stored=stored,
+        artifact_bytes=(
+            (Path("raw/000000.json.zst"), compressed),
+            (_TRADES_PATH, trade_bytes),
+        ),
         manifest_bytes=_canonical_json_bytes(manifest),
     )
 
@@ -771,30 +962,16 @@ def _validate_success_evidence(
     trade_stream: object,
     orderbook_snapshot: object,
 ) -> tuple[str, tuple[RawHttpCapture, RawHttpCapture]]:
+    symbol, trade_capture = _validate_trade_stream(trade_stream)
     if (
-        not isinstance(trade_stream, SampledTradeStream)
-        or not isinstance(orderbook_snapshot, SampledOrderbookSnapshot)
-        or trade_stream.symbol != orderbook_snapshot.symbol
-        or type(trade_stream.captures) is not tuple
-        or len(trade_stream.captures) != 1
-        or not isinstance(trade_stream.captures[0], RawHttpCapture)
+        not isinstance(orderbook_snapshot, SampledOrderbookSnapshot)
+        or symbol != orderbook_snapshot.symbol
         or not isinstance(orderbook_snapshot.capture, RawHttpCapture)
-        or _claims(trade_stream)
-        != _fixed_claims("sampled_trade_stream")
         or _claims(orderbook_snapshot)
         != _fixed_claims("sampled_orderbook_snapshot")
     ):
         raise ForwardArchiveError("forward_archive_input_invalid")
-    symbol = trade_stream.symbol
-    trade_capture = trade_stream.captures[0]
     orderbook_capture = orderbook_snapshot.capture
-    _validate_capture(
-        trade_capture,
-        symbol,
-        forward._TRADES_ENDPOINT_ID,
-        forward._trades_url(symbol),
-        success=True,
-    )
     _validate_capture(
         orderbook_capture,
         symbol,
@@ -802,20 +979,40 @@ def _validate_success_evidence(
         forward._orderbook_url(symbol),
         success=True,
     )
-    _validate_trade_observations(trade_stream, trade_capture)
     _validate_orderbook_snapshot(orderbook_snapshot, orderbook_capture)
-    expected_trade_stream, expected_orderbook_snapshot = (
-        _reconstruct_success_evidence(
-            symbol,
-            (trade_capture, orderbook_capture),
-        )
+    expected_orderbook_snapshot = _reconstruct_orderbook_snapshot(
+        symbol,
+        orderbook_capture,
     )
-    if (
-        trade_stream != expected_trade_stream
-        or orderbook_snapshot != expected_orderbook_snapshot
-    ):
+    if orderbook_snapshot != expected_orderbook_snapshot:
         raise ForwardArchiveError("forward_archive_input_invalid")
     return symbol, (trade_capture, orderbook_capture)
+
+
+def _validate_trade_stream(
+    trade_stream: object,
+) -> tuple[str, RawHttpCapture]:
+    if (
+        not isinstance(trade_stream, SampledTradeStream)
+        or not forward._valid_symbol(trade_stream.symbol)
+        or type(trade_stream.captures) is not tuple
+        or len(trade_stream.captures) != 1
+        or not isinstance(trade_stream.captures[0], RawHttpCapture)
+        or _claims(trade_stream) != _fixed_claims("sampled_trade_stream")
+    ):
+        raise ForwardArchiveError("forward_archive_input_invalid")
+    capture = trade_stream.captures[0]
+    _validate_capture(
+        capture,
+        trade_stream.symbol,
+        forward._TRADES_ENDPOINT_ID,
+        forward._trades_url(trade_stream.symbol),
+        success=True,
+    )
+    _validate_trade_observations(trade_stream, capture)
+    if trade_stream != _reconstruct_trade_stream(trade_stream.symbol, capture):
+        raise ForwardArchiveError("forward_archive_input_invalid")
+    return trade_stream.symbol, capture
 
 
 def _reconstruct_success_evidence(
@@ -823,28 +1020,49 @@ def _reconstruct_success_evidence(
     captures: tuple[RawHttpCapture, RawHttpCapture],
 ) -> tuple[SampledTradeStream, SampledOrderbookSnapshot]:
     trade_capture, orderbook_capture = captures
+    return (
+        _reconstruct_trade_stream(symbol, trade_capture),
+        _reconstruct_orderbook_snapshot(symbol, orderbook_capture),
+    )
+
+
+def _reconstruct_trade_stream(
+    symbol: str,
+    capture: RawHttpCapture,
+) -> SampledTradeStream:
     try:
         trade_value = forward._parse_json(
-            _capture_body(trade_capture),
-            trade_capture,
-        )
-        orderbook_value = forward._parse_json(
-            _capture_body(orderbook_capture),
-            orderbook_capture,
+            _capture_body(capture),
+            capture,
         )
         trade_stream = SampledTradeStream(
             symbol=symbol,
             observations=forward._parse_trades(
                 trade_value,
-                trade_capture,
+                capture,
                 0,
             ),
-            captures=(trade_capture,),
+            captures=(capture,),
         )
-        orderbook_snapshot = forward._parse_orderbook(
-            orderbook_value,
+    except (
+        CollectorError,
+        ForwardArchiveError,
+        forward.ForwardMicrostructureError,
+    ):
+        raise ForwardArchiveError("forward_archive_input_invalid") from None
+    return trade_stream
+
+
+def _reconstruct_orderbook_snapshot(
+    symbol: str,
+    capture: RawHttpCapture,
+) -> SampledOrderbookSnapshot:
+    try:
+        value = forward._parse_json(_capture_body(capture), capture)
+        snapshot = forward._parse_orderbook(
+            value,
             symbol,
-            orderbook_capture,
+            capture,
             1,
         )
     except (
@@ -853,7 +1071,7 @@ def _reconstruct_success_evidence(
         forward.ForwardMicrostructureError,
     ):
         raise ForwardArchiveError("forward_archive_input_invalid") from None
-    return trade_stream, orderbook_snapshot
+    return snapshot
 
 
 def _validate_capture(
@@ -1070,6 +1288,23 @@ def _content_identity(
     return hashlib.sha256(_canonical_json_bytes(identity)).hexdigest()
 
 
+def _trade_content_identity(
+    symbol: str,
+    capture: RawHttpCapture,
+) -> str:
+    identity = {
+        "schemaVersion": _TRADE_SCHEMA_VERSION,
+        "identityDomain": _TRADE_IDENTITY_DOMAIN,
+        "symbol": symbol,
+        "capture": {
+            "endpointId": capture.endpoint_id,
+            "receivedAt": capture.received_at,
+            "bodySha256": capture.body_sha256,
+        },
+    }
+    return hashlib.sha256(_canonical_json_bytes(identity)).hexdigest()
+
+
 def _stored_archive(
     root: Path,
     symbol: str,
@@ -1086,6 +1321,23 @@ def _stored_archive(
         ),
         trades_path=archive_directory / _TRADES_PATH,
         orderbook_path=archive_directory / _ORDERBOOK_PATH,
+        manifest_path=archive_directory / _MANIFEST_PATH,
+        manifest_sha256_path=archive_directory / _MANIFEST_SHA256_PATH,
+    )
+
+
+def _stored_trade_archive(
+    root: Path,
+    symbol: str,
+    content_identity: str,
+) -> StoredForwardTradeArchive:
+    archive_directory = root / _TRADE_SUCCESS_DIRECTORY / content_identity
+    return StoredForwardTradeArchive(
+        symbol=symbol,
+        content_identity=content_identity,
+        archive_directory=archive_directory,
+        raw_path=archive_directory / "raw/000000.json.zst",
+        trades_path=archive_directory / _TRADES_PATH,
         manifest_path=archive_directory / _MANIFEST_PATH,
         manifest_sha256_path=archive_directory / _MANIFEST_SHA256_PATH,
     )
@@ -1281,6 +1533,29 @@ def _require_archive_layout(stored: StoredForwardArchive) -> None:
             Path("raw/000001.json.zst"),
             _TRADES_PATH,
             _ORDERBOOK_PATH,
+            _MANIFEST_PATH,
+            _MANIFEST_SHA256_PATH,
+        }
+    )
+    actual_paths = frozenset(
+        path.relative_to(stored.archive_directory)
+        for path in stored.archive_directory.rglob("*")
+        if path.is_file() or path.is_symlink()
+    )
+    if actual_paths != expected_paths:
+        raise ValueError
+    for path in actual_paths:
+        _require_regular_private_file(stored.archive_directory / path)
+
+
+def _require_trade_archive_layout(stored: StoredForwardTradeArchive) -> None:
+    _require_real_private_directory(stored.archive_directory)
+    _require_real_private_directory(stored.archive_directory / "raw")
+    _require_real_private_directory(stored.archive_directory / "canonical")
+    expected_paths = frozenset(
+        {
+            Path("raw/000000.json.zst"),
+            _TRADES_PATH,
             _MANIFEST_PATH,
             _MANIFEST_SHA256_PATH,
         }

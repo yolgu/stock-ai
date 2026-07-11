@@ -10,6 +10,7 @@ import unittest
 from datetime import datetime, timezone
 from pathlib import Path
 
+import pyarrow.parquet as parquet
 import zstandard
 
 
@@ -204,7 +205,7 @@ class TossForwardCaptureRunContractTest(unittest.TestCase):
                 self.assertNotIn(secret, repr(arguments))
                 self.assertNotIn(secret, repr(result))
 
-    def test_orderbook_failure_preserves_trade_and_orderbook_raw_captures(
+    def test_orderbook_failure_keeps_trade_archive_and_book_failure_capture(
         self,
     ) -> None:
         from rp001_s2.toss_forward_capture_run import (
@@ -236,14 +237,85 @@ class TossForwardCaptureRunContractTest(unittest.TestCase):
             )
 
             outcome = result.outcomes[0]
-            self.assertEqual(outcome.status.value, "failed")
+            self.assertEqual(outcome.status.value, "partial")
             self.assertEqual(outcome.error_code, "HTTP_STATUS")
+            self.assertEqual(outcome.orderbook_error_code, "HTTP_STATUS")
+            self.assertIsNotNone(outcome.trade_archive)
             self.assertIsNotNone(outcome.failure_evidence)
-            self.assertEqual(len(outcome.failure_evidence.raw_paths), 2)
+            self.assertEqual(len(outcome.failure_evidence.raw_paths), 1)
             manifest = json.loads(outcome.failure_evidence.manifest_path.read_bytes())
             self.assertEqual(
                 [item["rawAvailability"] for item in manifest["captureEvidence"]],
-                ["exact", "exact"],
+                ["exact"],
+            )
+            self.assertEqual(
+                [item["endpointId"] for item in manifest["captureEvidence"]],
+                ["sampled_orderbook_v1"],
+            )
+
+    def test_orderbook_unauthorized_reports_partial_and_keeps_trade_research(
+        self,
+    ) -> None:
+        from rp001_s2.toss_forward_archive import ImmutableTossForwardStorage
+        from rp001_s2.toss_forward_capture_run import (
+            TossForwardCaptureArguments,
+            run_toss_forward_capture,
+        )
+
+        orderbook_failure_body = b'{"message":"unauthorized"}'
+        opener = _QueueOpener(
+            (
+                _oauth_response(),
+                _trade_response(),
+                _Response(orderbook_failure_body, status=401),
+            )
+        )
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            arguments = TossForwardCaptureArguments(
+                credential_file=_credential_file(root),
+                storage_root=_storage_root(root),
+                symbols=("TSLA",),
+            )
+
+            result = run_toss_forward_capture(
+                arguments,
+                clock=_clock,
+                opener=opener,
+                request_pacer=lambda: None,
+                free_bytes=lambda _path: _AVAILABLE_BYTES,
+            )
+
+            outcome = result.outcomes[0]
+            self.assertEqual(outcome.status.value, "partial")
+            self.assertEqual(outcome.trade_row_count, 1)
+            self.assertEqual(outcome.orderbook_error_code, "HTTP_STATUS")
+            self.assertIsNotNone(outcome.trade_archive)
+            self.assertEqual(
+                parquet.read_table(outcome.trade_archive.trades_path).num_rows,
+                1,
+            )
+            ImmutableTossForwardStorage(
+                arguments.storage_root,
+                free_bytes=lambda _path: _AVAILABLE_BYTES,
+            ).verify_trade_archive(outcome.trade_archive)
+            self.assertEqual(len(outcome.failure_evidence.raw_paths), 1)
+            failure_manifest = json.loads(
+                outcome.failure_evidence.manifest_path.read_bytes()
+            )
+            self.assertEqual(
+                [
+                    item["endpointId"]
+                    for item in failure_manifest["captureEvidence"]
+                ],
+                ["sampled_orderbook_v1"],
+            )
+            self.assertEqual(failure_manifest["captureEvidence"][0]["status"], 401)
+            self.assertEqual(
+                zstandard.ZstdDecompressor().decompress(
+                    outcome.failure_evidence.raw_paths[0].read_bytes()
+                ),
+                orderbook_failure_body,
             )
 
     def test_trade_failure_still_samples_orderbook_once_and_preserves_both(
@@ -372,7 +444,7 @@ class TossForwardCaptureRunContractTest(unittest.TestCase):
             self.assertNotIn(sensitive_token.encode("utf-8"), artifact_plaintext)
             self.assertNotIn(_CLIENT_SECRET.encode("utf-8"), artifact_plaintext)
 
-    def test_orderbook_sensitive_reflection_discards_prior_safe_trade_evidence(
+    def test_orderbook_sensitive_reflection_keeps_failure_terminal_only(
         self,
     ) -> None:
         from rp001_s2.toss_forward_capture_run import (
