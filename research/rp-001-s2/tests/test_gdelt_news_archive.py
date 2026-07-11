@@ -92,6 +92,20 @@ class _SequenceTransport:
         return self._responses.pop(0)
 
 
+class _ExceptionSequenceTransport:
+    def __init__(
+        self,
+        values: tuple[Exception | GdeltHttpResponse, ...],
+    ) -> None:
+        self._values = list(values)
+
+    def __call__(self, request: object) -> GdeltHttpResponse:
+        value = self._values.pop(0)
+        if isinstance(value, Exception):
+            raise value
+        return value
+
+
 class _HttpFixture:
     def __init__(
         self,
@@ -299,6 +313,108 @@ class GlobalGdeltWorkerTest(unittest.TestCase):
         self.assertEqual(len(outcome.attempts), 4)
         self.assertEqual(transport.started_at, [0.0, 30.0, 90.0, 210.0])
         self.assertEqual(controlled.sleeps, [30.0, 60.0, 120.0])
+
+    def test_converts_arbitrary_transport_exception_and_continues_next_scope(self) -> None:
+        controlled = _ControlledTime()
+        transport = _ExceptionSequenceTransport(
+            (
+                RuntimeError("secret-bearing transport failure"),
+                GdeltHttpResponse(
+                    status=200,
+                    headers=(("content-type", "application/json"),),
+                    body=b'{"query_details":{},"timeline":[]}',
+                ),
+            )
+        )
+        worker = GlobalGdeltWorker(
+            transport=transport,
+            monotonic=controlled.monotonic,
+            sleeper=controlled.sleep,
+            utc_clock=controlled.utc_now,
+        )
+        entry = GdeltQueryEntry(
+            instrument_id="TSLA",
+            symbol="TSLA",
+            canonical_company_name="Tesla Inc",
+            query='"Tesla Inc"',
+            source_kind="official_nasdaq_trader_directory",
+            source_name="Tesla, Inc. - Common Stock",
+            source_path="instrument-master.json",
+        )
+
+        outcomes = worker.collect(
+            (
+                GdeltNewsScope.for_entry(entry, "timelinevolraw"),
+                GdeltNewsScope.for_entry(entry, "timelinetone"),
+            )
+        )
+
+        self.assertEqual(
+            tuple(outcome.terminal_status for outcome in outcomes),
+            ("failed", "completed"),
+        )
+        self.assertEqual(outcomes[0].terminal_reason, "transport_error")
+        self.assertEqual(outcomes[0].attempts[0].response.status, 0)
+        self.assertNotIn(b"secret-bearing", outcomes[0].attempts[0].response.body)
+
+    def test_rejects_jsonp_media_type_but_accepts_json_with_charset(self) -> None:
+        controlled = _ControlledTime()
+        transport = _SequenceTransport(
+            (
+                GdeltHttpResponse(
+                    status=200,
+                    headers=(("content-type", "application/jsonp"),),
+                    body=b'{"query_details":{},"timeline":[]}',
+                ),
+                GdeltHttpResponse(
+                    status=200,
+                    headers=(
+                        ("content-type", "application/json; charset=utf-8"),
+                    ),
+                    body=b'{"query_details":{},"timeline":[]}',
+                ),
+            )
+        )
+        transport.bind_time(controlled)
+        worker = GlobalGdeltWorker(
+            transport=transport,
+            monotonic=controlled.monotonic,
+            sleeper=controlled.sleep,
+            utc_clock=controlled.utc_now,
+        )
+        entry = GdeltQueryEntry(
+            instrument_id="TSLA",
+            symbol="TSLA",
+            canonical_company_name="Tesla Inc",
+            query='"Tesla Inc"',
+            source_kind="official_nasdaq_trader_directory",
+            source_name="Tesla, Inc. - Common Stock",
+            source_path="instrument-master.json",
+        )
+
+        outcomes = worker.collect(
+            (
+                GdeltNewsScope.for_entry(entry, "timelinevolraw"),
+                GdeltNewsScope.for_entry(entry, "timelinetone"),
+            )
+        )
+
+        self.assertEqual(
+            tuple(outcome.terminal_status for outcome in outcomes),
+            ("invalid", "completed"),
+        )
+        query_map = build_gdelt_query_map(
+            scope_plan_source=_scope_plan_source(),
+            directory_master_source=_directory_source(),
+            frozen_at="2026-07-11T16:10:00Z",
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            storage = GdeltArchiveStorage(Path(directory).resolve())
+            stored = storage.publish_outcome(
+                storage.publish_query_map(query_map),
+                outcomes[0],
+            )
+            storage.verify_scope(stored)
 
 
 class StrictGdeltTransportTest(unittest.TestCase):
@@ -591,6 +707,193 @@ class GdeltArchiveStorageTest(unittest.TestCase):
             self.assertEqual(
                 manifest["terminal"]["reason"],
                 "partial_attempt_without_terminal_manifest",
+            )
+
+    def test_rejects_deleted_v2_manifest_ordinal_with_valid_rehashed_manifest(self) -> None:
+        query_map = build_gdelt_query_map(
+            scope_plan_source=_scope_plan_source(),
+            directory_master_source=_directory_source(),
+            frozen_at="2026-07-11T16:10:00Z",
+        )
+        entry = next(value for value in query_map.entries if value.symbol == "TSLA")
+        controlled = _ControlledTime()
+        transport = _SequenceTransport(
+            (
+                GdeltHttpResponse(
+                    status=200,
+                    headers=(("content-type", "application/json"),),
+                    body=b'{"query_details":{},"timeline":[]}',
+                ),
+            )
+        )
+        transport.bind_time(controlled)
+        outcome = GlobalGdeltWorker(
+            transport=transport,
+            monotonic=controlled.monotonic,
+            sleeper=controlled.sleep,
+            utc_clock=controlled.utc_now,
+        ).collect((GdeltNewsScope.for_entry(entry, "timelinevolraw"),))[0]
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            storage = GdeltArchiveStorage(root)
+            stored = storage.publish_outcome(
+                storage.publish_query_map(query_map),
+                outcome,
+            )
+            manifest = json.loads(stored.manifest_path.read_bytes())
+            self.assertEqual(
+                manifest["schemaVersion"],
+                "rp001-s2-gdelt-news-manifest.v2",
+            )
+            del manifest["attempts"][0]["ordinal"]
+            manifest_sha256 = _rewrite_canonical_artifact(
+                stored.manifest_path,
+                manifest,
+            )
+
+            with self.assertRaisesRegex(
+                ValueError,
+                "gdelt_archive_verification_failed",
+            ):
+                storage.verify_scope(
+                    replace(stored, manifest_sha256=manifest_sha256)
+                )
+
+    def test_rejects_impossible_retry_status_sequence_with_valid_hashes(self) -> None:
+        query_map = build_gdelt_query_map(
+            scope_plan_source=_scope_plan_source(),
+            directory_master_source=_directory_source(),
+            frozen_at="2026-07-11T16:10:00Z",
+        )
+        entry = next(value for value in query_map.entries if value.symbol == "TSLA")
+        controlled = _ControlledTime()
+        transport = _SequenceTransport(
+            (
+                GdeltHttpResponse(
+                    status=429,
+                    headers=(("content-type", "text/plain"),),
+                    body=b"rate limited",
+                ),
+                GdeltHttpResponse(
+                    status=200,
+                    headers=(("content-type", "application/json"),),
+                    body=b'{"query_details":{},"timeline":[]}',
+                ),
+            )
+        )
+        transport.bind_time(controlled)
+        outcome = GlobalGdeltWorker(
+            transport=transport,
+            monotonic=controlled.monotonic,
+            sleeper=controlled.sleep,
+            utc_clock=controlled.utc_now,
+        ).collect((GdeltNewsScope.for_entry(entry, "timelinevolraw"),))[0]
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            storage = GdeltArchiveStorage(root)
+            stored = storage.publish_outcome(
+                storage.publish_query_map(query_map),
+                outcome,
+            )
+            first_metadata_path = stored.metadata_paths[0]
+            first_metadata = json.loads(first_metadata_path.read_bytes())
+            first_metadata["status"] = 500
+            first_metadata_sha256 = _rewrite_canonical_artifact(
+                first_metadata_path,
+                first_metadata,
+            )
+            manifest = json.loads(stored.manifest_path.read_bytes())
+            manifest["attempts"][0]["status"] = 500
+            manifest["attempts"][0]["metadata"][
+                "sha256"
+            ] = first_metadata_sha256
+            manifest_sha256 = _rewrite_canonical_artifact(
+                stored.manifest_path,
+                manifest,
+            )
+
+            with self.assertRaisesRegex(
+                ValueError,
+                "gdelt_archive_verification_failed",
+            ):
+                storage.verify_scope(
+                    replace(stored, manifest_sha256=manifest_sha256)
+                )
+
+    def test_seals_sidecar_only_partial_without_repeating_publish_conflict(self) -> None:
+        query_map = build_gdelt_query_map(
+            scope_plan_source=_scope_plan_source(),
+            directory_master_source=_directory_source(),
+            frozen_at="2026-07-11T16:10:00Z",
+        )
+        entry = next(value for value in query_map.entries if value.symbol == "TSLA")
+        scope = GdeltNewsScope.for_entry(entry, "timelinevolraw")
+        controlled = _ControlledTime()
+        transport = _SequenceTransport(
+            (
+                GdeltHttpResponse(
+                    status=200,
+                    headers=(("content-type", "application/json"),),
+                    body=b'{"query_details":{},"timeline":[]}',
+                ),
+            )
+        )
+        transport.bind_time(controlled)
+        outcome = GlobalGdeltWorker(
+            transport=transport,
+            monotonic=controlled.monotonic,
+            sleeper=controlled.sleep,
+            utc_clock=controlled.utc_now,
+        ).collect((scope,))[0]
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            storage = GdeltArchiveStorage(root)
+            query_binding = storage.publish_query_map(query_map)
+            scope_sha256 = sha256_bytes(
+                canonical_json_bytes(
+                    scope.to_canonical_body(query_binding.artifact_sha256)
+                )
+            )
+            body_path = (
+                root
+                / "captures"
+                / query_binding.artifact_sha256
+                / "TSLA"
+                / "timelinevolraw"
+                / scope_sha256
+                / "attempt-001.body.json"
+            )
+            body_path.parent.mkdir(parents=True)
+            declared_sha256 = sha256_bytes(outcome.attempts[0].response.body)
+            Path(f"{body_path}.sha256").write_text(
+                f"{declared_sha256}\n",
+                encoding="ascii",
+            )
+
+            recovered = storage.recover_partial_scope(
+                query_binding,
+                scope,
+                recovered_at="2026-07-11T16:20:00Z",
+            )
+
+            self.assertIsNotNone(recovered)
+            assert recovered is not None
+            storage.verify_scope(recovered)
+            manifest = json.loads(recovered.manifest_path.read_bytes())
+            self.assertEqual(
+                manifest["partialArtifacts"][0]["kind"],
+                "orphan_body_sidecar",
+            )
+            self.assertEqual(
+                manifest["partialArtifacts"][0]["declaredSha256"],
+                declared_sha256,
+            )
+            self.assertEqual(
+                storage.publish_outcome(query_binding, outcome),
+                recovered,
             )
 
 
