@@ -32,8 +32,9 @@ from rp001_s2.minute_canonicalization import (
 )
 from rp001_s2.toss_intraday_run import (
     IntradayRunError,
+    TossMinuteSession,
     load_secure_toss_environment,
-    run_toss_minute_shard,
+    open_toss_minute_session,
     validate_toss_minute_scope,
 )
 from rp001_s2.toss_boundary import _MINIMUM_REQUEST_INTERVAL_SECONDS
@@ -75,14 +76,20 @@ class CredentialLoader(Protocol):
         """Load a one-shot credential environment from a private file path."""
 
 
-class TossShardRunner(Protocol):
+class TossSessionFactory(Protocol):
     def __call__(
         self,
-        scope: CollectionScope,
         *,
         environment: MutableMapping[str, str],
         clock: Callable[[], datetime],
-        request_pacer: Callable[[], None],
+    ) -> TossMinuteSession:
+        """Open one authenticated, explicitly closable batch session."""
+
+
+class TossScopeCollector(Protocol):
+    def __call__(
+        self,
+        scope: CollectionScope,
     ) -> IntradayCandleCollection:
         """Collect one frozen Toss minute scope."""
 
@@ -135,6 +142,47 @@ class GlobalMarketDataPacer:
                 self._sleeper(remaining)
                 now = self._monotonic()
             self._last_request_at = now
+
+
+class _LazyTossMinuteSession:
+    def __init__(
+        self,
+        *,
+        credential_file: Path,
+        credential_loader: CredentialLoader,
+        session_factory: TossSessionFactory,
+        clock: Callable[[], datetime],
+        request_pacer: Callable[[], None],
+    ) -> None:
+        self._credential_file = credential_file
+        self._credential_loader = credential_loader
+        self._session_factory = session_factory
+        self._clock = clock
+        self._request_pacer = request_pacer
+        self._session: TossMinuteSession | None = None
+
+    def collect(self, scope: CollectionScope) -> IntradayCandleCollection:
+        session = self._session
+        if session is None:
+            environment = self._credential_loader(self._credential_file)
+            try:
+                session = self._session_factory(
+                    environment=environment,
+                    clock=self._clock,
+                )
+                self._session = session
+            finally:
+                environment.clear()
+        return session.collect(
+            scope,
+            request_pacer=self._request_pacer,
+        )
+
+    def close(self) -> None:
+        session = self._session
+        self._session = None
+        if session is not None:
+            session.close()
 
 
 @dataclass(frozen=True)
@@ -258,7 +306,7 @@ def run_toss_minute_batch(
     request_pacer: Callable[[], None] | None = None,
     free_bytes: Callable[[Path], int] | None = None,
     credential_loader: CredentialLoader = load_secure_toss_environment,
-    shard_runner: TossShardRunner = run_toss_minute_shard,
+    session_factory: TossSessionFactory = open_toss_minute_session,
     canonicalizer: TossCanonicalizer = canonicalize_toss_collection,
 ) -> TossMinuteBatchSummary:
     """Execute every scope in order and append one terminal event per scope."""
@@ -268,27 +316,33 @@ def run_toss_minute_batch(
     effective_pacer = (
         request_pacer if request_pacer is not None else GlobalMarketDataPacer()
     )
+    session = _LazyTossMinuteSession(
+        credential_file=credential_file,
+        credential_loader=credential_loader,
+        session_factory=session_factory,
+        clock=clock,
+        request_pacer=effective_pacer,
+    )
     terminals: list[TossMinuteScopeTerminal] = []
 
-    with ledger.transaction() as ledger_transaction:
-        for scope_index, scope in enumerate(scopes):
-            outcome = _resume_or_collect(
-                scope=scope,
-                credential_file=credential_file,
-                archive_root=archive_root,
-                storage=storage,
-                clock=clock,
-                request_pacer=effective_pacer,
-                credential_loader=credential_loader,
-                shard_runner=shard_runner,
-                canonicalizer=canonicalizer,
-            )
-            entry = ledger_transaction.append(
-                _TERMINAL_EVENT_TYPE,
-                _terminal_payload(scope_index, scope, outcome),
-                _format_utc(clock()),
-            )
-            terminals.append(_terminal(scope_index, outcome, entry))
+    try:
+        with ledger.transaction() as ledger_transaction:
+            for scope_index, scope in enumerate(scopes):
+                outcome = _resume_or_collect(
+                    scope=scope,
+                    archive_root=archive_root,
+                    storage=storage,
+                    scope_collector=session.collect,
+                    canonicalizer=canonicalizer,
+                )
+                entry = ledger_transaction.append(
+                    _TERMINAL_EVENT_TYPE,
+                    _terminal_payload(scope_index, scope, outcome),
+                    _format_utc(clock()),
+                )
+                terminals.append(_terminal(scope_index, outcome, entry))
+    finally:
+        session.close()
 
     terminal_tuple = tuple(terminals)
     return TossMinuteBatchSummary(
@@ -333,13 +387,9 @@ def _validate_batch_input(
 def _resume_or_collect(
     *,
     scope: CollectionScope,
-    credential_file: Path,
     archive_root: Path,
     storage: ImmutableArchiveStorage,
-    clock: Callable[[], datetime],
-    request_pacer: Callable[[], None],
-    credential_loader: CredentialLoader,
-    shard_runner: TossShardRunner,
+    scope_collector: TossScopeCollector,
     canonicalizer: TossCanonicalizer,
 ) -> _ScopeOutcome:
     try:
@@ -363,12 +413,8 @@ def _resume_or_collect(
 
     return _collect_and_store(
         scope=scope,
-        credential_file=credential_file,
         storage=storage,
-        clock=clock,
-        request_pacer=request_pacer,
-        credential_loader=credential_loader,
-        shard_runner=shard_runner,
+        scope_collector=scope_collector,
         canonicalizer=canonicalizer,
     )
 
@@ -376,26 +422,15 @@ def _resume_or_collect(
 def _collect_and_store(
     *,
     scope: CollectionScope,
-    credential_file: Path,
     storage: ImmutableArchiveStorage,
-    clock: Callable[[], datetime],
-    request_pacer: Callable[[], None],
-    credential_loader: CredentialLoader,
-    shard_runner: TossShardRunner,
+    scope_collector: TossScopeCollector,
     canonicalizer: TossCanonicalizer,
 ) -> _ScopeOutcome:
     safe_captures: tuple[RawHttpCapture, ...] = ()
     completion: AcquisitionCompletion | None = None
     row_count = 0
-    environment: MutableMapping[str, str] | None = None
     try:
-        environment = credential_loader(credential_file)
-        collection = shard_runner(
-            scope,
-            environment=environment,
-            clock=clock,
-            request_pacer=request_pacer,
-        )
+        collection = scope_collector(scope)
         safe_captures = _safe_capture_tuple(collection.captures)
         rows = canonicalizer(scope, collection)
         row_count = len(rows)
@@ -438,9 +473,6 @@ def _collect_and_store(
             "unexpected_failure",
             safe_captures,
         )
-    finally:
-        if environment is not None:
-            environment.clear()
 
 
 def _verified_existing_archive(

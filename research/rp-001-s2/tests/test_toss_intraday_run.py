@@ -14,6 +14,7 @@ from rp001_s2.archive_contract import CollectionScope, SampleRole
 from rp001_s2.toss_intraday_run import (
     IntradayRunError,
     load_secure_toss_environment,
+    open_toss_minute_session,
     run_toss_minute_shard,
     seven_day_shards,
 )
@@ -124,6 +125,74 @@ def _provider_date_rows() -> list[dict[str, str]]:
 
 
 class TossIntradayRunTest(unittest.TestCase):
+    def test_authenticated_session_reuses_one_token_until_closed(self) -> None:
+        first_candle = {
+            "timestamp": "2026-07-10T13:30:00Z",
+            "openPrice": "100",
+            "highPrice": "103",
+            "lowPrice": "99",
+            "closePrice": "102",
+            "volume": "10",
+            "currency": "USD",
+        }
+        second_candle = {
+            **first_candle,
+            "timestamp": "2026-07-10T13:40:00Z",
+        }
+        opener = _QueueOpener(
+            (
+                _Response(b'{"access_token":"ephemeral-token"}'),
+                _Response(
+                    json.dumps(
+                        {"result": {"candles": [first_candle], "nextBefore": None}},
+                        separators=(",", ":"),
+                    ).encode("utf-8")
+                ),
+                _Response(
+                    json.dumps(
+                        {"result": {"candles": [second_candle], "nextBefore": None}},
+                        separators=(",", ":"),
+                    ).encode("utf-8")
+                ),
+            )
+        )
+        environment = {
+            "TOSS_CLIENT_ID": "identifier",
+            "TOSS_CLIENT_SECRET": "private-value",
+        }
+        first_scope = replace(
+            _scope(
+                start_at=datetime(2026, 7, 10, 13, 30, tzinfo=timezone.utc),
+                end_at=datetime(2026, 7, 10, 13, 32, tzinfo=timezone.utc),
+            ),
+            instrument_id="stable-instrument-id",
+        )
+        second_scope = replace(
+            first_scope,
+            start_at=datetime(2026, 7, 10, 13, 40, tzinfo=timezone.utc),
+            end_at=datetime(2026, 7, 10, 13, 42, tzinfo=timezone.utc),
+        )
+
+        session = open_toss_minute_session(
+            environment=environment,
+            opener=opener,
+            clock=lambda: datetime(2026, 7, 11, tzinfo=timezone.utc),
+        )
+        first = session.collect(first_scope, request_pacer=lambda: None)
+        second = session.collect(second_scope, request_pacer=lambda: None)
+        session.close()
+
+        self.assertEqual(environment, {})
+        self.assertEqual(len(first.analysis_rows), 1)
+        self.assertEqual(len(second.analysis_rows), 1)
+        self.assertEqual(
+            [getattr(request, "method") for request in opener.requests],
+            ["POST", "GET", "GET"],
+        )
+        with self.assertRaisesRegex(IntradayRunError, "session_closed"):
+            session.collect(second_scope, request_pacer=lambda: None)
+        self.assertNotIn("ephemeral-token", repr(session))
+
     def test_provider_date_daily_scope_queries_2359_and_preserves_1339_rows(self) -> None:
         scope = CollectionScope(
             provider="toss",

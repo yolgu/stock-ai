@@ -54,6 +54,65 @@ class _DuplicateCredentialKey(ValueError):
     pass
 
 
+class TossMinuteSession:
+    """Reuse one ephemeral Toss token across a bounded minute batch."""
+
+    def __init__(
+        self,
+        *,
+        opener: _Opener,
+        token: str,
+        clock: Callable[[], datetime],
+    ) -> None:
+        if not token or any(character in token for character in "\r\n\x00"):
+            raise IntradayRunError("session_invalid")
+        self._opener = opener
+        self._token = token
+        self._clock = clock
+
+    def __repr__(self) -> str:
+        return "TossMinuteSession(<redacted>)"
+
+    def collect(
+        self,
+        scope: CollectionScope,
+        *,
+        request_pacer: Callable[[], None] | None = None,
+    ) -> IntradayCandleCollection:
+        if not self._token:
+            raise IntradayRunError("session_closed")
+        adjusted = validate_toss_minute_scope(scope)
+        initial_before = _format_utc(_initial_before(scope))
+        try:
+            transport = StrictMinuteCandleTransport(
+                opener=self._opener,
+                allowed_symbols=(scope.symbol,),
+                earliest_before=_format_utc(scope.start_at),
+                initial_before=initial_before,
+                request_pacer=request_pacer,
+            )
+            collector = IntradayMeasurementCollector(
+                transport=transport,
+                token_supplier=lambda: self._token,
+                clock=self._clock,
+            )
+            return collector.collect_candles(
+                symbol=scope.symbol,
+                interval="1m",
+                adjusted=adjusted,
+                start_at=_format_utc(scope.start_at),
+                end_at=_format_utc(scope.end_at),
+                initial_before=initial_before,
+                count=200,
+                page_limit=64,
+            )
+        except (ReadOnlyBoundaryError, MeasurementError) as error:
+            raise IntradayRunError(error.code, captures=error.captures) from None
+
+    def close(self) -> None:
+        self._token = ""
+
+
 def load_secure_toss_environment(path: Path) -> dict[str, str]:
     """Read a private regular file into a one-shot credential environment."""
     descriptor = -1
@@ -96,6 +155,26 @@ def load_secure_toss_environment(path: Path) -> dict[str, str]:
     }
 
 
+def open_toss_minute_session(
+    *,
+    environment: MutableMapping[str, str],
+    clock: Callable[[], datetime],
+    opener: _Opener | None = None,
+) -> TossMinuteSession:
+    """Authenticate once and return a redacted, explicitly closable session."""
+    credentials = load_credentials(environment)
+    effective_opener = opener or build_opener(_RejectRedirectHandler())
+    try:
+        token = _authenticate(effective_opener, credentials, clock)
+        return TossMinuteSession(
+            opener=effective_opener,
+            token=token,
+            clock=clock,
+        )
+    except ReadOnlyBoundaryError as error:
+        raise IntradayRunError(error.code, captures=error.captures) from None
+
+
 def seven_day_shards(scope: CollectionScope) -> tuple[CollectionScope, ...]:
     """Partition one frozen acquisition scope without changing its role."""
     cursor = scope.start_at
@@ -116,39 +195,19 @@ def run_toss_minute_shard(
     request_pacer: Callable[[], None] | None = None,
 ) -> IntradayCandleCollection:
     """Authenticate ephemerally and exhaust one bounded Toss minute shard."""
-    adjusted = validate_toss_minute_scope(scope)
-    credentials = load_credentials(environment)
-    effective_opener = opener or build_opener(_RejectRedirectHandler())
-    token = ""
+    validate_toss_minute_scope(scope)
+    session = open_toss_minute_session(
+        environment=environment,
+        clock=clock,
+        opener=opener,
+    )
     try:
-        token = _authenticate(effective_opener, credentials, clock)
-        initial_before = _format_utc(_initial_before(scope))
-        transport = StrictMinuteCandleTransport(
-            opener=effective_opener,
-            allowed_symbols=(scope.symbol,),
-            earliest_before=_format_utc(scope.start_at),
-            initial_before=initial_before,
+        return session.collect(
+            scope,
             request_pacer=request_pacer,
         )
-        collector = IntradayMeasurementCollector(
-            transport=transport,
-            token_supplier=lambda: token,
-            clock=clock,
-        )
-        return collector.collect_candles(
-            symbol=scope.symbol,
-            interval="1m",
-            adjusted=adjusted,
-            start_at=_format_utc(scope.start_at),
-            end_at=_format_utc(scope.end_at),
-            initial_before=initial_before,
-            count=200,
-            page_limit=64,
-        )
-    except (ReadOnlyBoundaryError, MeasurementError) as error:
-        raise IntradayRunError(error.code, captures=error.captures) from None
     finally:
-        token = ""
+        session.close()
 
 
 def validate_toss_minute_scope(scope: CollectionScope) -> bool:
