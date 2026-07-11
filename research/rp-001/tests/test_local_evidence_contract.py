@@ -15,6 +15,7 @@ from unittest.mock import patch
 from rp001.local_evidence import (
     AppendOnlyLocalLedger,
     LocalArtifactStore,
+    LocalLedgerAppendError,
     canonical_json_bytes,
     sha256_bytes,
 )
@@ -419,7 +420,7 @@ class AppendOnlyLocalLedgerTest(unittest.TestCase):
     def test_transaction_exit_rejects_tampering_after_incremental_append(
         self,
     ) -> None:
-        with self.assertRaises(ValueError):
+        with self.assertRaises(LocalLedgerAppendError) as raised:
             with self.ledger.transaction() as transaction:
                 first = transaction.append(
                     "first",
@@ -439,7 +440,17 @@ class AppendOnlyLocalLedgerTest(unittest.TestCase):
                     f"{sha256_bytes(source)}\n".encode("ascii")
                 )
 
+        self.assertTrue(raised.exception.event_published)
         self.assertTrue((self.events_directory / "000002.json").is_file())
+
+    def test_transaction_preserves_oserror_raised_by_caller(self) -> None:
+        archive_error = OSError("archive unavailable")
+
+        with self.assertRaises(OSError) as raised:
+            with self.ledger.transaction():
+                raise archive_error
+
+        self.assertIs(archive_error, raised.exception)
 
     def test_append_revalidates_chain_after_validate_before_publish_tamper(
         self,

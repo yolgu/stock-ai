@@ -597,6 +597,11 @@ class LocalLedgerTransaction:
         self._ledger = ledger
         self._chain = chain
         self._append_state: LocalLedgerState | None = None
+        self._has_published_entry = False
+
+    @property
+    def has_published_entry(self) -> bool:
+        return self._has_published_entry
 
     def validate(self) -> LocalLedgerState:
         self.verify()
@@ -635,6 +640,7 @@ class LocalLedgerTransaction:
             entry.sequence,
             entry.record_sha256,
         )
+        self._has_published_entry = True
 
     def append(
         self,
@@ -671,14 +677,23 @@ class AppendOnlyLocalLedger:
         )
         locked = False
         try:
-            fcntl.flock(chain.directory_descriptor, fcntl.LOCK_EX)
+            try:
+                fcntl.flock(chain.directory_descriptor, fcntl.LOCK_EX)
+            except OSError as error:
+                raise LocalEvidenceError("local ledger lock failed") from error
             locked = True
             chain.verify()
             transaction = LocalLedgerTransaction(self, chain)
             yield transaction
-            transaction.validate()
-        except OSError as error:
-            raise LocalEvidenceError("local ledger lock failed") from error
+            try:
+                transaction.validate()
+            except BaseException as error:
+                if transaction.has_published_entry:
+                    raise LocalLedgerAppendError(
+                        "local ledger changed after event publication",
+                        event_published=True,
+                    ) from error
+                raise
         finally:
             if locked:
                 fcntl.flock(chain.directory_descriptor, fcntl.LOCK_UN)
