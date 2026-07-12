@@ -22,11 +22,13 @@ AUTONOMY_ROOT = REPOSITORY_ROOT / "research" / "rp-001" / "autonomy"
 
 
 class CodexAutonomyPresetTest(unittest.TestCase):
-    def test_skill_requires_explicit_goal_invocation_and_controller_replay(self) -> None:
+    def test_skill_accepts_marker_goal_and_requires_controller_replay(self) -> None:
         source = (SKILL_ROOT / "SKILL.md").read_text(encoding="utf-8")
 
         self.assertIn("name: autonomous-research", source)
-        self.assertIn("explicitly invokes `$autonomous-research`", source)
+        self.assertIn("[QUANT_RESEARCH_GOAL]", source)
+        self.assertIn("create_goal", source)
+        self.assertIn("bootstrap-campaign", source)
         self.assertLess(source.index("`status`"), source.index("`next`"))
         self.assertLess(source.index("`next`"), source.index("`validate-result`"))
         self.assertLess(source.index("`validate-result`"), source.index("`commit-result`"))
@@ -42,8 +44,14 @@ class CodexAutonomyPresetTest(unittest.TestCase):
         )
         self.assertIn("Use $autonomous-research", metadata)
 
-    def test_hook_configuration_is_an_inactive_preset(self) -> None:
-        self.assertFalse((REPOSITORY_ROOT / ".codex" / "hooks.json").exists())
+    def test_v1_hook_preset_stays_inactive_while_v2_ingress_is_active(self) -> None:
+        active_path = REPOSITORY_ROOT / ".codex" / "hooks.json"
+        self.assertTrue(active_path.is_file())
+        active = json.loads(active_path.read_text(encoding="utf-8"))
+        self.assertIn("UserPromptSubmit", active["hooks"])
+        command = active["hooks"]["UserPromptSubmit"][0]["hooks"][0]["command"]
+        self.assertIn("research_goal_ingress.py", command)
+
         self.assertTrue(HOOK_PRESET.is_file())
         value = json.loads(HOOK_PRESET.read_text(encoding="utf-8"))
 
@@ -54,6 +62,13 @@ class CodexAutonomyPresetTest(unittest.TestCase):
             {"SessionStart", "PreToolUse", "Stop"},
             set(hooks),
         )
+
+    def test_agents_routes_marker_goal_directly_to_campaign_runtime(self) -> None:
+        source = (REPOSITORY_ROOT / "AGENTS.md").read_text(encoding="utf-8")
+
+        self.assertIn("[QUANT_RESEARCH_GOAL]", source)
+        self.assertIn("Do not invoke `brainstorming`", source)
+        self.assertIn("one CampaignActionContract", source)
 
     def test_goal_template_is_directly_compilable_and_automation_stays_dormant(self) -> None:
         template = AUTONOMY_ROOT / "autonomous-goal-template.md"

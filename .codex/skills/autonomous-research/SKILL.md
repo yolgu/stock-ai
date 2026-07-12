@@ -1,6 +1,6 @@
 ---
 name: autonomous-research
-description: Use when the user explicitly invokes `$autonomous-research` with a bounded scientific research Goal or asks to resume its Goal-bound ledger runtime.
+description: Use when the user submits a `[QUANT_RESEARCH_GOAL]`, explicitly invokes `$autonomous-research`, or asks to resume a Goal-bound quantitative research ledger.
 ---
 
 # Autonomous Research
@@ -11,9 +11,48 @@ Treat the verified ledger and deterministic controller as the source of state. G
 
 ## Invocation gate
 
-Run only after explicit `$autonomous-research` invocation. Work only inside the dedicated program output root. Treat all existing collectors, raw archives, canonical stores, confirmation releases, and frozen RP-001 artifacts as read-only boundaries.
+Run after either an explicit `$autonomous-research` invocation or a verified
+`[QUANT_RESEARCH_GOAL]` ingress. The marker is explicit authorization to call
+`create_goal`; the user does not need to enter another command. Work only inside
+the dedicated campaign or program output root. Treat all existing collectors,
+raw archives, canonical stores, confirmation releases, and frozen RP-001
+artifacts as read-only boundaries.
 
-## Activation workflow
+## Goal-only V2 activation
+
+1. Read the exact Goal path and campaign ID injected by the verified
+   `UserPromptSubmit` hook.
+2. Call `create_goal` exactly once with the body after the marker as the
+   objective. Omit `token_budget` unless the user explicitly supplied one.
+3. The verified ingress hook has already run `bootstrap-campaign` and atomically
+   marked the session `campaign_bootstrapped`. Verify this with `status`; do not
+   create a second bootstrap path in model prose.
+4. Run `next`. Execute at most one CampaignActionContract in the
+   Goal turn.
+   For a scientific action, write raw evidence matching
+   `research/rp-001/autonomy-v2/scientific-evidence-contract.md`; never create a
+   pass/fail receipt. The controller independently recomputes and records it.
+5. Never infer campaign state from chat history. Resume from the verified
+   campaign ledger after compaction, interruption, or restart.
+6. Stop at a DataRequest, unresolved P0, campaign budget terminal, or explicit
+   user stop. Do not silently fall back to a prompt-only loop when the Goal tool
+   is unavailable.
+
+Internal bootstrap shape:
+
+```text
+quant_autonomous_research.py bootstrap-campaign
+  --repository-root <repository-root>
+  --goal <verified-absolute-goal-path>
+  --occurred-at <current-utc>
+```
+
+The V2 campaign freezes the research question and data contract before it
+accepts a development DataRelease. Each bounded ProgramVersion hands its
+Champion and ResearchFrontier to the next version until the registered campaign
+budget is exhausted.
+
+## Explicit V1 activation workflow
 
 1. Locate the supplied Goal path, repository root, preset output root, confirmation release root, and user-provided DataRelease directory.
 2. Do not edit, copy, or wrap the supplied Goal. Run `bootstrap-goal` with its original absolute path and without `--program-root`. The runtime derives a deterministic program ID from the exact Goal SHA-256, applies the frozen preset, and either creates or resumes the matching ledger.

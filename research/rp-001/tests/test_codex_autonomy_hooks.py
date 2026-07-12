@@ -62,6 +62,49 @@ class CodexAutonomyHookTest(unittest.TestCase):
                 self.assertEqual(0, completed.returncode, completed.stderr)
                 self.assertEqual("", completed.stdout)
 
+    def test_pre_tool_denies_mutating_shell_outside_action_contract(self) -> None:
+        for command in (
+            "touch research/rp-001/protocol.json",
+            "python -c 'open(\"validator.py\",\"w\").write(\"x\")'",
+            "python /tmp/run_program.py",
+            "find research -delete",
+            "git diff --output=validator.py",
+            "git diff -o validator.py",
+            (
+                f"python {REPOSITORY_ROOT / 'research/rp-001/quant_autonomous_research.py'} "
+                "bootstrap-campaign"
+            ),
+        ):
+            with self.subTest(command=command):
+                completed = self._run_hook(
+                    PRE_TOOL_HOOK,
+                    {
+                        "hook_event_name": "PreToolUse",
+                        "tool_name": "Bash",
+                        "tool_input": {"command": command},
+                    },
+                    {"RP001_AUTONOMY_PROGRAM_ROOT": "bound-program"},
+                )
+
+                self.assertEqual(0, completed.returncode, completed.stderr)
+                decision = json.loads(completed.stdout)["hookSpecificOutput"]
+                self.assertEqual("deny", decision["permissionDecision"])
+
+    def test_pre_tool_fails_closed_for_mcp_tools_during_active_research(self) -> None:
+        completed = self._run_hook(
+            PRE_TOOL_HOOK,
+            {
+                "hook_event_name": "PreToolUse",
+                "tool_name": "mcp__filesystem__write_file",
+                "tool_input": {"path": "validator.py", "content": "tampered"},
+            },
+            {"RP001_AUTONOMY_PROGRAM_ROOT": "bound-program"},
+        )
+
+        self.assertEqual(0, completed.returncode, completed.stderr)
+        decision = json.loads(completed.stdout)["hookSpecificOutput"]
+        self.assertEqual("deny", decision["permissionDecision"])
+
     def test_pre_tool_is_inert_without_explicit_program_binding(self) -> None:
         completed = self._run_hook(
             PRE_TOOL_HOOK,
