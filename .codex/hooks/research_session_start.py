@@ -9,7 +9,7 @@ def main() -> int:
     value = read_hook_input()
     if value.get("hook_event_name") != "SessionStart":
         return 0
-    action = next_action_from_bound_program()
+    action = next_action_from_bound_program(value)
     if action is None:
         return 0
     write_json(

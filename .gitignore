@@ -23,3 +23,5 @@ venv/
 .ruff_cache/
 coverage/
 .worktrees/
+.codex/state/
+research/rp-001/autonomy-v2/campaigns/

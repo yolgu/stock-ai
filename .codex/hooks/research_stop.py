@@ -5,7 +5,14 @@ from __future__ import annotations
 from research_hook_support import next_action_from_bound_program, read_hook_input, write_json
 
 
-_NON_RUNNABLE_ACTIONS = frozenset({"WAIT_FOR_DATA_RELEASE", "NONE"})
+_NON_RUNNABLE_ACTIONS = frozenset(
+    {
+        "WAIT_FOR_DATA_RELEASE",
+        "WAIT_FOR_DEVELOPMENT_RELEASE",
+        "WAIT_FOR_CONFIRMATION_RELEASE",
+        "NONE",
+    }
+)
 
 
 def main() -> int:
@@ -13,7 +20,7 @@ def main() -> int:
     if value.get("hook_event_name") != "Stop" or value.get("stop_hook_active") is True:
         write_json({"continue": True})
         return 0
-    action = next_action_from_bound_program()
+    action = next_action_from_bound_program(value)
     if action is None or action.get("actionKind") in _NON_RUNNABLE_ACTIONS:
         write_json({"continue": True})
         return 0

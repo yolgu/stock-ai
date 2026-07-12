@@ -1,0 +1,54 @@
+{
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "command": "/Users/jik/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -B \"$(git rev-parse --show-toplevel)/.codex/hooks/research_goal_ingress.py\"",
+            "statusMessage": "Capturing quantitative research Goal",
+            "timeout": 15,
+            "type": "command"
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "command": "/Users/jik/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -B \"$(git rev-parse --show-toplevel)/.codex/hooks/research_session_start.py\"",
+            "statusMessage": "Loading autonomous research state",
+            "timeout": 15,
+            "type": "command"
+          }
+        ],
+        "matcher": "startup|resume"
+      }
+    ],
+    "PreToolUse": [
+      {
+        "hooks": [
+          {
+            "command": "/Users/jik/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -B \"$(git rev-parse --show-toplevel)/.codex/hooks/research_pre_tool.py\"",
+            "statusMessage": "Checking autonomous research boundary",
+            "timeout": 15,
+            "type": "command"
+          }
+        ],
+        "matcher": "Bash|apply_patch|Edit|Write|mcp__.*"
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "command": "/Users/jik/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -B \"$(git rev-parse --show-toplevel)/.codex/hooks/research_stop.py\"",
+            "statusMessage": "Checking autonomous research continuation",
+            "timeout": 15,
+            "type": "command"
+          }
+        ]
+      }
+    ]
+  }
+}
