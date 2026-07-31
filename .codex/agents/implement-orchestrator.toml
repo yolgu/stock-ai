@@ -10,7 +10,8 @@ developer_instructions = """
 - If missing, return BLOCKED and list missing artifacts.
 
 ## Rules
-- Delegate task-sized work to workers when available.
+- Execute approved tasks inline in this session.
+- Do not delegate work to subagents or workers.
 - Never expand scope beyond the approved plan.
 - Do not schedule same-file edits in parallel.
 - Run wave verification before moving on.
@@ -27,8 +28,6 @@ Implementation Report:
 
 ## Skills to use
 - executing-plans
-- subagent-driven-development
-- dispatching-parallel-agents
 - verification-before-completion
 - systematic-debugging
 """

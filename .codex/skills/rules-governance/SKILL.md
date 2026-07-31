@@ -1,13 +1,32 @@
 ---
 name: rules-governance
-description: Repository-wide engineering governance. Use first for any task to enforce TDD-first flow, evidence-based completion reporting, and strict layer boundaries.
+description: "Use only when changing executable application behavior, domain rules, production code boundaries, or runtime schemas and migrations. Do not trigger for read-only work or for docs, plans, prompts, skills, AGENTS.md, non-runtime metadata/config edits, or file cleanup that does not change executable behavior."
 ---
 
 # Rules Governance
 
 ## Overview
 
-Apply repository-wide engineering governance.
+Apply repository-wide engineering governance to executable behavior changes.
+
+## Trigger Boundary
+
+Classify the requested change before applying this workflow.
+
+**In scope:**
+- Production or test code that changes observable runtime behavior
+- Bug fixes and behavior-preserving production-code refactors
+- Domain invariants, application use cases, adapters, or UI behavior
+- Runtime schemas or migrations with executable compatibility requirements
+
+**Out of scope:**
+- Read-only inspection, explanation, status, or review
+- Documentation, plans, prompts, skills, and `AGENTS.md`
+- Static metadata or configuration that does not change runtime behavior
+- File deletion, renaming, or organization with no executable behavior change
+
+For mixed changes, apply this workflow only to the executable portion. Verify the
+non-code portion with syntax, reference, and diff checks appropriate to that artifact.
 
 ## Dependency Order
 
@@ -15,22 +34,28 @@ Apply repository-wide engineering governance.
 
 ## Team Conventions
 
-- Follow TDD in strict order (RED -> GREEN -> REFACTOR) for every task.
+- Follow TDD in strict order (RED -> GREEN -> REFACTOR) for new or changed executable behavior.
+- For behavior-preserving refactors, establish a green safety net before restructuring; do not manufacture a RED behavior.
 - Prove completion/success claims with verification command output in the same turn.
 - Block layer-boundary violations immediately.
+- Keep verification proportional to the affected behavior and boundary.
 
 ## Mandatory Workflow
 
-1. Define the behavior change and verification commands first.
-2. Write a failing test first (RED).
-3. Implement the minimum change to reach GREEN.
-4. Refactor, then run full verification.
-5. Report results with command-output evidence.
+1. Confirm that the request changes executable behavior; otherwise stop this workflow.
+2. Classify the code change as behavior-changing or behavior-preserving.
+3. For behavior changes, define the observable behavior and write a failing behavior or regression test (RED).
+4. For behavior-preserving refactors, run the existing safety net first and add a characterization test only when coverage is missing.
+5. Implement the minimum change, then run focused tests and the affected suite.
+6. Refactor only while the safety net remains green.
+7. Run the full project suite only for cross-cutting changes or final integration.
+8. Report results with command-output evidence.
 
 ## Prohibited
 
 - Do not claim completion without verification.
 - Do not allow layer violations as "exceptions".
+- Do not invent failing tests for documentation, prompts, skills, static metadata, or file cleanup.
 
 ## Embedded Rule Sources (Full Text)
 
@@ -74,7 +99,8 @@ alwaysApply: true
 
 ## TDD
 
-- Red → Green → Refactor. Write a failing test first, then minimal code to pass, then refine.
+- For executable behavior changes, use Red → Green → Refactor: write a failing behavior test first, then minimal code to pass, then refine.
+- For non-code artifacts, use artifact-appropriate validation instead of manufacturing a failing test.
 - Test behavior and contracts, not implementation details.
 
 ## 눈가림 테스트 방지 (No Blind/Meaningless Tests)
@@ -149,7 +175,8 @@ alwaysApply: true
 
 ## TDD
 
-- Red → Green → Refactor. Write a failing test first, then minimal code to pass, then refine.
+- For executable behavior changes, use Red → Green → Refactor: write a failing behavior test first, then minimal code to pass, then refine.
+- For non-code artifacts, use artifact-appropriate validation instead of manufacturing a failing test.
 - Test behavior and contracts, not implementation details.
 
 ## 눈가림 테스트 방지 (No Blind/Meaningless Tests)

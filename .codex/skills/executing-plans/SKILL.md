@@ -11,7 +11,7 @@ Load plan, review critically, execute all tasks, report when complete.
 
 **Announce at start:** "I'm using the executing-plans skill to implement this plan."
 
-**Note:** This workflow works better with access to subagents. The quality of its work will be higher if run on a platform with subagent support. If subagents are available, use subagent-driven-development instead of this skill.
+**Execution mode:** Execute the approved plan inline in this session with explicit review checkpoints.
 
 ## The Process
 

@@ -1,6 +1,6 @@
 ---
 name: test-driven-development
-description: Use when implementing any feature or bugfix, before writing implementation code
+description: "Use only before adding or changing executable production behavior: features, bug fixes, domain rules, or runtime schema/migration behavior. Do not trigger for behavior-preserving refactors with an existing safety net, read-only work, docs, plans, prompts, skills, AGENTS.md, static metadata/config-only edits, generated artifacts, or file cleanup with no runtime behavior change."
 ---
 
 # Test-Driven Development (TDD)
@@ -16,27 +16,35 @@ Write the test first. Watch it fail. Write minimal code to pass.
 ## When to Use
 
 **Always:**
-- New features
-- Bug fixes
-- Refactoring
-- Behavior changes
+- Executable features and behavior changes
+- Bug fixes with an observable regression
+- Domain rules and runtime schema or migration behavior
 
-**Exceptions (ask your human partner):**
+**Do not use:**
+- Read-only inspection, explanation, review, or status work
+- Documentation, plans, prompts, skills, or `AGENTS.md`
+- Static metadata or configuration that does not change runtime behavior
+- Generated artifacts
+- File deletion, renaming, or organization with no runtime behavior change
+- Behavior-preserving refactors with an existing green safety net
 - Throwaway prototypes
-- Generated code
-- Configuration files
 
-Thinking "skip TDD just this once"? Stop. That's rationalization.
+For runtime configuration changes, use TDD only when the configuration changes
+observable executable behavior and a meaningful behavior test exists. Otherwise use
+schema parsing, linting, or a focused smoke check.
+
+Within the executable-behavior scope above, thinking "skip TDD just this once" is
+rationalization.
 
 ## The Iron Law
 
 ```
-NO PRODUCTION CODE WITHOUT A FAILING TEST FIRST
+NO EXECUTABLE PRODUCTION BEHAVIOR CHANGE WITHOUT A FAILING TEST FIRST
 ```
 
 Write code before the test? Delete it. Start over.
 
-**No exceptions:**
+**No exceptions within this skill's trigger boundary:**
 - Don't keep it as "reference"
 - Don't "adapt" it while writing tests
 - Don't look at it
@@ -328,7 +336,7 @@ Extract validation for multiple fields if needed.
 
 Before marking work complete:
 
-- [ ] Every new function/method has a test
+- [ ] Every new observable behavior has a test
 - [ ] Watched each test fail before implementing
 - [ ] Each test failed for expected reason (feature missing, not typo)
 - [ ] Wrote minimal code to pass each test
@@ -364,8 +372,8 @@ When adding mocks or test utilities, read @testing-anti-patterns.md to avoid com
 ## Final Rule
 
 ```
-Production code → test exists and failed first
-Otherwise → not TDD
+Executable production behavior → test exists and failed first
+Non-code artifact → use artifact-appropriate validation instead
 ```
 
 No exceptions without your human partner's permission.
