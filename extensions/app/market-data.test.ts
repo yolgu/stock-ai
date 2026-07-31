@@ -12,6 +12,7 @@ const {
   MarketDataError,
   StoredMarketDataSnapshotRepository,
   TossMarketDataClient,
+  canonicalizeMinuteCandles,
   createMarketDataSnapshot,
   refreshMarketDataForWatchlist
 } = require("./market-data.cjs") as {
@@ -52,9 +53,14 @@ const {
       symbol: string,
       interval: "1m" | "1d",
       accessToken: string,
-      count?: number
+      count?: number,
+      before?: string | null
     ): Promise<unknown>;
   };
+  canonicalizeMinuteCandles(
+    candles: Array<Record<string, unknown>>,
+    completedBefore: string
+  ): Array<Record<string, unknown>>;
   createMarketDataSnapshot(input: {
     card: { id: string; market: string; symbol: string };
     capturedAt: string;
@@ -76,6 +82,10 @@ const {
     snapshots: Array<{
       adapterErrors: unknown[];
       observations?: {
+        intradayCandles?: {
+          fetchedAt?: string;
+          candles: Array<Record<string, unknown>>;
+        };
         marketSession?: {
           country: string;
           state: string;
@@ -128,13 +138,19 @@ describe("TossMarketDataClient", () => {
     await client.fetchPrices(["MU", "AAPL"], "access-token-that-must-not-leak");
     await client.fetchTrades("MU", "access-token-that-must-not-leak");
     await client.fetchOrderbook("MU", "access-token-that-must-not-leak");
-    await client.fetchCandles("MU", "1m", "access-token-that-must-not-leak", 100);
+    await client.fetchCandles(
+      "MU",
+      "1m",
+      "access-token-that-must-not-leak",
+      100,
+      "2026-07-01T00:00:00.000Z"
+    );
 
     expect(requests.map((request) => request.url)).toEqual([
       "https://openapi.tossinvest.com/api/v1/prices?symbols=MU%2CAAPL",
       "https://openapi.tossinvest.com/api/v1/trades?symbol=MU&count=50",
       "https://openapi.tossinvest.com/api/v1/orderbook?symbol=MU",
-      "https://openapi.tossinvest.com/api/v1/candles?symbol=MU&interval=1m&count=100&adjusted=true"
+      "https://openapi.tossinvest.com/api/v1/candles?symbol=MU&interval=1m&count=100&adjusted=true&before=2026-07-01T00%3A00%3A00.000Z"
     ]);
     expect(requests.every((request) => request.headers.get("Authorization") === "Bearer access-token-that-must-not-leak")).toBe(true);
     expect(requests.some((request) => request.headers.has("X-Tossinvest-Account"))).toBe(false);
@@ -191,6 +207,83 @@ describe("TossMarketDataClient", () => {
 });
 
 describe("refreshMarketDataForWatchlist", () => {
+  it("refreshes intraday candles from their fetchedAt instead of the newer snapshot capturedAt", async () => {
+    const fetchedIntervals: string[] = [];
+    const context = {
+      occurredAt: "2026-07-06T09:01:00.000Z",
+      watchlistRepository: {
+        list: async () => ({
+          activeCards: [{ id: "card-1", market: "NASDAQ", symbol: "MU" }]
+        })
+      },
+      tossAccessTokenProvider: {
+        readAccessToken: async () => "access-token-that-must-not-leak"
+      },
+      marketDataSnapshotRepository: {
+        readLatest: async () => [{
+          snapshotId: "snapshot-previous",
+          cardId: "card-1",
+          market: "NASDAQ",
+          symbol: "MU",
+          capturedAt: "2026-07-06T09:00:45.000Z",
+          freshness: "fresh",
+          quality: "complete",
+          observations: {
+            price: null,
+            trades: [],
+            orderbook: null,
+            intradayCandles: {
+              interval: "1m",
+              fetchedAt: "2026-07-06T09:00:00.000Z",
+              candles: [],
+              nextBefore: null
+            },
+            dailyCandles: {
+              interval: "1d",
+              fetchedAt: "2026-07-06T09:00:45.000Z",
+              candles: [],
+              nextBefore: null
+            },
+            exchangeRate: null,
+            marketSession: null
+          },
+          adapterErrors: []
+        }],
+        saveAll: async (): Promise<void> => {}
+      },
+      tossMarketDataClient: {
+        fetchPrices: async () => [],
+        fetchTrades: async () => [],
+        fetchOrderbook: async () => null,
+        fetchCandles: async (_symbol: string, interval: "1m" | "1d") => {
+          fetchedIntervals.push(interval);
+
+          return { interval, candles: [], nextBefore: null };
+        }
+      },
+      tossMarketInfoClient: {
+        fetchMarketCalendar: async () => ({
+          today: {
+            regularMarket: {
+              startTime: "2026-07-06T00:00:00.000Z",
+              endTime: "2026-07-06T23:59:59.000Z"
+            }
+          }
+        }),
+        fetchExchangeRate: async () => null
+      }
+    };
+
+    const result = await refreshMarketDataForWatchlist(context, {
+      visibleCardIds: ["card-1"]
+    });
+
+    expect(fetchedIntervals).toEqual(["1m"]);
+    expect(result.snapshots[0]?.observations?.intradayCandles?.fetchedAt).toBe(
+      "2026-07-06T09:01:00.000Z"
+    );
+  });
+
   it("keeps US day-market polling at 15 seconds when pre-market exists later on the same Korean calendar day", async () => {
     const context = {
       occurredAt: "2026-07-07T03:30:00.000Z",
@@ -454,6 +547,25 @@ describe("StoredMarketDataSnapshotRepository", () => {
 });
 
 describe("createMarketDataSnapshot", () => {
+  it("sorts and deduplicates minute candles while excluding incomplete and future minutes", () => {
+    const candles = canonicalizeMinuteCandles(
+      [
+        createRawCandle("2026-07-06T09:02:00.000Z", "102"),
+        createRawCandle("2026-07-06T09:00:00.000Z", "100"),
+        createRawCandle("2026-07-06T09:01:10.000Z", "101-old"),
+        createRawCandle("2026-07-06T09:03:00.000Z", "103"),
+        createRawCandle("2026-07-06T09:01:40.000Z", "101-new")
+      ],
+      "2026-07-06T09:02:00.000Z"
+    );
+
+    expect(candles.map((candle) => candle.timestamp)).toEqual([
+      "2026-07-06T09:00:00.000Z",
+      "2026-07-06T09:01:40.000Z"
+    ]);
+    expect(candles[1]?.closePrice).toBe("101-new");
+  });
+
   it("degrades quality when observations include adapter errors", () => {
     const partialSnapshot = createMarketDataSnapshot({
       card: { id: "card-1", market: "NASDAQ", symbol: "MU" },
@@ -506,3 +618,15 @@ describe("createMarketDataSnapshot", () => {
     );
   });
 });
+
+function createRawCandle(timestamp: string, closePrice: string): Record<string, unknown> {
+  return {
+    timestamp,
+    openPrice: closePrice,
+    highPrice: closePrice,
+    lowPrice: closePrice,
+    closePrice,
+    volume: "1",
+    currency: "USD"
+  };
+}

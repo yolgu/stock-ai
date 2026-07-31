@@ -46,6 +46,18 @@ export type QuantIndicatorsLatestSnapshotsRequestEvent =
   "quant-indicators:latest-snapshots:request";
 export type QuantIndicatorsLatestSnapshotsResponseEvent =
   "quant-indicators:latest-snapshots:response";
+export type MarketStateRefreshWatchlistRequestEvent =
+  "market-state:refresh-watchlist:request";
+export type MarketStateRefreshWatchlistResponseEvent =
+  "market-state:refresh-watchlist:response";
+export type MarketStateLatestSnapshotsRequestEvent =
+  "market-state:latest-snapshots:request";
+export type MarketStateLatestSnapshotsResponseEvent =
+  "market-state:latest-snapshots:response";
+export type MarketStateTraceRequestEvent = "market-state:trace:request";
+export type MarketStateTraceResponseEvent = "market-state:trace:response";
+export type MarketStateHistoryRequestEvent = "market-state:history:request";
+export type MarketStateHistoryResponseEvent = "market-state:history:response";
 export type TossCredentialsReadStatusRequestEvent =
   "settings:toss-credentials:read-status";
 export type TossCredentialsReadStatusResponseEvent =
@@ -76,6 +88,10 @@ export type AppRequestEvent =
   | QuantIndicatorsRefreshWatchlistRequestEvent
   | QuantIndicatorsRefreshCardRequestEvent
   | QuantIndicatorsLatestSnapshotsRequestEvent
+  | MarketStateRefreshWatchlistRequestEvent
+  | MarketStateLatestSnapshotsRequestEvent
+  | MarketStateTraceRequestEvent
+  | MarketStateHistoryRequestEvent
   | TossCredentialsReadStatusRequestEvent
   | TossCredentialsSaveRequestEvent
   | TossCredentialsDeleteRequestEvent
@@ -99,6 +115,10 @@ export type AppResponseEvent =
   | QuantIndicatorsRefreshWatchlistResponseEvent
   | QuantIndicatorsRefreshCardResponseEvent
   | QuantIndicatorsLatestSnapshotsResponseEvent
+  | MarketStateRefreshWatchlistResponseEvent
+  | MarketStateLatestSnapshotsResponseEvent
+  | MarketStateTraceResponseEvent
+  | MarketStateHistoryResponseEvent
   | TossCredentialsReadStatusResponseEvent
   | TossCredentialsSaveResponseEvent
   | TossCredentialsDeleteResponseEvent
@@ -127,7 +147,10 @@ export type AppRuntimeErrorCode =
   | "market_calendar_unavailable"
   | "quant_indicator_unavailable"
   | "quant_indicator_snapshot_not_found"
-  | "quant_indicator_calculation_failed";
+  | "quant_indicator_calculation_failed"
+  | "market_state_unavailable"
+  | "market_state_snapshot_not_found"
+  | "market_state_calculation_failed";
 
 export interface AppRuntimeContract {
   extensionId: "app.stockSub.runtime";
@@ -167,6 +190,14 @@ export interface AppRuntimeContract {
     quantIndicatorsRefreshCardResponse: QuantIndicatorsRefreshCardResponseEvent;
     quantIndicatorsLatestSnapshotsRequest: QuantIndicatorsLatestSnapshotsRequestEvent;
     quantIndicatorsLatestSnapshotsResponse: QuantIndicatorsLatestSnapshotsResponseEvent;
+    marketStateRefreshWatchlistRequest: MarketStateRefreshWatchlistRequestEvent;
+    marketStateRefreshWatchlistResponse: MarketStateRefreshWatchlistResponseEvent;
+    marketStateLatestSnapshotsRequest: MarketStateLatestSnapshotsRequestEvent;
+    marketStateLatestSnapshotsResponse: MarketStateLatestSnapshotsResponseEvent;
+    marketStateTraceRequest: MarketStateTraceRequestEvent;
+    marketStateTraceResponse: MarketStateTraceResponseEvent;
+    marketStateHistoryRequest: MarketStateHistoryRequestEvent;
+    marketStateHistoryResponse: MarketStateHistoryResponseEvent;
     tossCredentialsReadStatusRequest: TossCredentialsReadStatusRequestEvent;
     tossCredentialsReadStatusResponse: TossCredentialsReadStatusResponseEvent;
     tossCredentialsSaveRequest: TossCredentialsSaveRequestEvent;
@@ -664,6 +695,171 @@ export interface QuantIndicatorLatestSnapshotsPayload {
   snapshots: QuantIndicatorSnapshotPayload[];
 }
 
+export type MarketStateSignalId =
+  | "FOMO_LIKE"
+  | "PANIC_LIKE"
+  | "PROFIT_TAKING_PROXY"
+  | "PERSISTENT_RECOVERY"
+  | "EFFICIENT_UPTREND";
+export type MarketStateSignalStatus =
+  | "detected"
+  | "notDetected"
+  | "notApplicable"
+  | "collecting"
+  | "unavailable";
+export type ObservedMarketState =
+  | "BASELINE"
+  | "AFTER_UP"
+  | "AFTER_DOWN"
+  | "UNAVAILABLE";
+export type MarketStateBackfillStatus =
+  | "idle"
+  | "running"
+  | "complete"
+  | "incomplete"
+  | "failed";
+
+export interface MarketStateGatePayload {
+  gateId: "POSITIVE_PRESSURE_MEAN_3" | "POSITIVE_RELATIVE_VOLUME";
+  label: string;
+  value: number;
+  operator: ">";
+  threshold: number;
+  passed: boolean | null;
+}
+
+export interface MarketStateContributionPayload {
+  featureName: string;
+  rawValue: number;
+  mean: number;
+  scale: number;
+  standardizedValue: number;
+  coefficient: number;
+  contribution: number;
+}
+
+export interface MarketStateFormulaTracePayload {
+  intercept: number;
+  contributions: MarketStateContributionPayload[];
+  effectiveTailShare: number;
+  calibrationTailShare: number;
+  transportTailSafetyFactor: number;
+  candidateId: string;
+  cause: string;
+  phenotypeTag: string;
+}
+
+export interface MarketStateSignalPayload {
+  signalId: MarketStateSignalId;
+  displayName: string;
+  formationLabel: string;
+  horizonMinutes: number;
+  status: MarketStateSignalStatus;
+  unavailableReason?: string;
+  percentile: number | null;
+  percentileNumerator: number | null;
+  percentileDenominator: number | null;
+  rawScore: number | null;
+  dynamicThreshold: number | null;
+  thresholdDistance: number | null;
+  gate: MarketStateGatePayload | null;
+  requiredRiskState: Exclude<ObservedMarketState, "UNAVAILABLE">;
+  currentRiskState: ObservedMarketState;
+  currentDetectionStartedAt: string | null;
+  lastDetectedAt: string | null;
+  trace: MarketStateFormulaTracePayload | null;
+}
+
+export interface MarketStateFormulaSnapshotPayload {
+  snapshotId: string;
+  cardId: string;
+  symbol: string;
+  sessionDate: string;
+  asOf: string;
+  bucketIndex: number | null;
+  sourceGenerationId: string;
+  formulaVersion: string;
+  formulaContentSha256: string;
+  observedState: ObservedMarketState;
+  observedStateLabel: string;
+  signals: MarketStateSignalPayload[];
+  notifiedSignalIds: MarketStateSignalId[];
+}
+
+export interface MarketStateBackfillProgressPayload {
+  jobId: string;
+  status: MarketStateBackfillStatus;
+  requiredSessions: number;
+  completedSessions: number;
+  currentInstrumentId: string | null;
+  totalInstrumentCount: number;
+  completedInstrumentCount: number;
+  error: string | null;
+}
+
+export interface RefreshMarketStateForWatchlistPayload {
+  cardIds: string[];
+}
+
+export interface ReadLatestMarketStateSnapshotsPayload {
+  cardIds?: string[];
+}
+
+export interface MarketStateRefreshPayload {
+  refreshedAt: string;
+  snapshots: MarketStateFormulaSnapshotPayload[];
+  backfillProgress: MarketStateBackfillProgressPayload;
+}
+
+export interface MarketStateLatestSnapshotsPayload {
+  snapshots: MarketStateFormulaSnapshotPayload[];
+  backfillProgress: MarketStateBackfillProgressPayload;
+}
+
+export interface ReadMarketStateTracePayload {
+  cardId: string;
+  signalId: MarketStateSignalId;
+}
+
+export interface MarketStateTracePayload extends MarketStateSignalPayload {
+  cardId: string;
+  symbol: string;
+  sessionDate: string;
+  asOf: string;
+  sourceGenerationId: string;
+  formulaVersion: string;
+  formulaContentSha256: string;
+  observedState: ObservedMarketState;
+  observedStateLabel: string;
+}
+
+export interface MarketStateTraceResponsePayload {
+  trace: MarketStateTracePayload | null;
+}
+
+export interface ReadMarketStateHistoryPayload {
+  cardId: string;
+  signalId: MarketStateSignalId;
+  sessionDate: string;
+}
+
+export interface MarketStateHistoryPointPayload {
+  asOf: string;
+  bucketIndex: number | null;
+  status: MarketStateSignalStatus;
+  percentile: number | null;
+  rawScore: number | null;
+  dynamicThreshold: number | null;
+  detected: boolean;
+}
+
+export interface MarketStateHistoryPayload {
+  cardId: string;
+  signalId: MarketStateSignalId;
+  sessionDate: string;
+  points: MarketStateHistoryPointPayload[];
+}
+
 export interface CreateTossCredentialStatusPayloadInput {
   configured: boolean;
   clientId?: string | null;
@@ -883,6 +1079,343 @@ export function isAppErrorEnvelope(input: unknown): input is AppErrorEnvelope {
     readString(error, "message") !== undefined &&
     typeof error.recoverable === "boolean"
   );
+}
+
+const MARKET_STATE_SIGNAL_IDS: readonly MarketStateSignalId[] = [
+  "FOMO_LIKE",
+  "PANIC_LIKE",
+  "PROFIT_TAKING_PROXY",
+  "PERSISTENT_RECOVERY",
+  "EFFICIENT_UPTREND"
+];
+
+export function isMarketStateRefreshPayload(
+  input: unknown
+): input is MarketStateRefreshPayload {
+  const payload: Record<string, unknown> = readRecord(input);
+
+  return (
+    isIsoTimestamp(payload.refreshedAt) &&
+    Array.isArray(payload.snapshots) &&
+    payload.snapshots.every(isMarketStateFormulaSnapshotPayload) &&
+    isMarketStateBackfillProgressPayload(payload.backfillProgress)
+  );
+}
+
+export function isMarketStateLatestSnapshotsPayload(
+  input: unknown
+): input is MarketStateLatestSnapshotsPayload {
+  const payload: Record<string, unknown> = readRecord(input);
+
+  return (
+    Array.isArray(payload.snapshots) &&
+    payload.snapshots.every(isMarketStateFormulaSnapshotPayload) &&
+    isMarketStateBackfillProgressPayload(payload.backfillProgress)
+  );
+}
+
+export function isMarketStateTraceResponsePayload(
+  input: unknown
+): input is MarketStateTraceResponsePayload {
+  const payload: Record<string, unknown> = readRecord(input);
+
+  return (
+    payload.trace === null ||
+    isMarketStateTracePayload(payload.trace)
+  );
+}
+
+export function isMarketStateHistoryPayload(
+  input: unknown
+): input is MarketStateHistoryPayload {
+  const payload: Record<string, unknown> = readRecord(input);
+
+  return (
+    readString(payload, "cardId") !== undefined &&
+    isMarketStateSignalId(payload.signalId) &&
+    isSessionDate(payload.sessionDate) &&
+    Array.isArray(payload.points) &&
+    payload.points.every(isMarketStateHistoryPointPayload)
+  );
+}
+
+export function isMarketStateFormulaSnapshotPayload(
+  input: unknown
+): input is MarketStateFormulaSnapshotPayload {
+  const snapshot: Record<string, unknown> = readRecord(input);
+  const signalIds: string[] = Array.isArray(snapshot.signals)
+    ? snapshot.signals.map(
+        (signal: unknown): string =>
+          readString(readRecord(signal), "signalId") ?? ""
+      )
+    : [];
+
+  return (
+    readString(snapshot, "snapshotId") !== undefined &&
+    readString(snapshot, "cardId") !== undefined &&
+    readString(snapshot, "symbol") !== undefined &&
+    typeof snapshot.sessionDate === "string" &&
+    isIsoTimestamp(snapshot.asOf) &&
+    (
+      snapshot.bucketIndex === null ||
+      Number.isInteger(snapshot.bucketIndex)
+    ) &&
+    readString(snapshot, "sourceGenerationId") !== undefined &&
+    isSha256(snapshot.formulaVersion) &&
+    isSha256(snapshot.formulaContentSha256) &&
+    isObservedMarketState(snapshot.observedState) &&
+    readString(snapshot, "observedStateLabel") !== undefined &&
+    Array.isArray(snapshot.signals) &&
+    signalIds.join("|") === MARKET_STATE_SIGNAL_IDS.join("|") &&
+    snapshot.signals.every(isMarketStateSignalPayload) &&
+    Array.isArray(snapshot.notifiedSignalIds) &&
+    snapshot.notifiedSignalIds.every(isMarketStateSignalId)
+  );
+}
+
+function isMarketStateSignalPayload(
+  input: unknown
+): input is MarketStateSignalPayload {
+  const signal: Record<string, unknown> = readRecord(input);
+
+  return (
+    isMarketStateSignalId(signal.signalId) &&
+    readString(signal, "displayName") !== undefined &&
+    readString(signal, "formationLabel") !== undefined &&
+    typeof signal.horizonMinutes === "number" &&
+    Number.isFinite(signal.horizonMinutes) &&
+    isMarketStateSignalStatus(signal.status) &&
+    isNullablePercentile(signal.percentile) &&
+    isNullableFiniteNumber(signal.percentileNumerator) &&
+    isNullableFiniteNumber(signal.percentileDenominator) &&
+    isNullableFiniteNumber(signal.rawScore) &&
+    isNullableFiniteNumber(signal.dynamicThreshold) &&
+    isNullableFiniteNumber(signal.thresholdDistance) &&
+    (
+      signal.gate === null ||
+      isMarketStateGatePayload(signal.gate)
+    ) &&
+    isObservedMarketRiskState(signal.requiredRiskState) &&
+    isObservedMarketState(signal.currentRiskState) &&
+    isNullableIsoTimestamp(signal.currentDetectionStartedAt) &&
+    isNullableIsoTimestamp(signal.lastDetectedAt) &&
+    (
+      signal.trace === null ||
+      isMarketStateFormulaTracePayload(signal.trace)
+    ) &&
+    (
+      signal.unavailableReason === undefined ||
+      typeof signal.unavailableReason === "string"
+    )
+  );
+}
+
+function isMarketStateTracePayload(
+  input: unknown
+): input is MarketStateTracePayload {
+  const trace: Record<string, unknown> = readRecord(input);
+
+  return (
+    isMarketStateSignalPayload(trace) &&
+    readString(trace, "cardId") !== undefined &&
+    readString(trace, "symbol") !== undefined &&
+    isSessionDate(trace.sessionDate) &&
+    isIsoTimestamp(trace.asOf) &&
+    readString(trace, "sourceGenerationId") !== undefined &&
+    isSha256(trace.formulaVersion) &&
+    isSha256(trace.formulaContentSha256) &&
+    isObservedMarketState(trace.observedState) &&
+    readString(trace, "observedStateLabel") !== undefined
+  );
+}
+
+function isMarketStateGatePayload(
+  input: unknown
+): input is MarketStateGatePayload {
+  const gate: Record<string, unknown> = readRecord(input);
+
+  return (
+    [
+      "POSITIVE_PRESSURE_MEAN_3",
+      "POSITIVE_RELATIVE_VOLUME"
+    ].includes(String(gate.gateId)) &&
+    readString(gate, "label") !== undefined &&
+    isFiniteNumber(gate.value) &&
+    gate.operator === ">" &&
+    isFiniteNumber(gate.threshold) &&
+    (
+      gate.passed === null ||
+      typeof gate.passed === "boolean"
+    )
+  );
+}
+
+function isMarketStateFormulaTracePayload(
+  input: unknown
+): input is MarketStateFormulaTracePayload {
+  const trace: Record<string, unknown> = readRecord(input);
+
+  return (
+    isFiniteNumber(trace.intercept) &&
+    Array.isArray(trace.contributions) &&
+    trace.contributions.length > 0 &&
+    trace.contributions.every(isMarketStateContributionPayload) &&
+    isProbability(trace.effectiveTailShare) &&
+    isProbability(trace.calibrationTailShare) &&
+    isFiniteNumber(trace.transportTailSafetyFactor) &&
+    Number(trace.transportTailSafetyFactor) > 0 &&
+    readString(trace, "candidateId") !== undefined &&
+    readString(trace, "cause") !== undefined &&
+    readString(trace, "phenotypeTag") !== undefined
+  );
+}
+
+function isMarketStateContributionPayload(
+  input: unknown
+): input is MarketStateContributionPayload {
+  const contribution: Record<string, unknown> = readRecord(input);
+
+  return (
+    readString(contribution, "featureName") !== undefined &&
+    isFiniteNumber(contribution.rawValue) &&
+    isFiniteNumber(contribution.mean) &&
+    isFiniteNumber(contribution.scale) &&
+    Number(contribution.scale) > 0 &&
+    isFiniteNumber(contribution.standardizedValue) &&
+    isFiniteNumber(contribution.coefficient) &&
+    isFiniteNumber(contribution.contribution)
+  );
+}
+
+function isMarketStateHistoryPointPayload(
+  input: unknown
+): input is MarketStateHistoryPointPayload {
+  const point: Record<string, unknown> = readRecord(input);
+
+  return (
+    isIsoTimestamp(point.asOf) &&
+    (
+      point.bucketIndex === null ||
+      isNonNegativeInteger(point.bucketIndex)
+    ) &&
+    isMarketStateSignalStatus(point.status) &&
+    isNullablePercentile(point.percentile) &&
+    isNullableFiniteNumber(point.rawScore) &&
+    isNullableFiniteNumber(point.dynamicThreshold) &&
+    typeof point.detected === "boolean"
+  );
+}
+
+function isMarketStateBackfillProgressPayload(
+  input: unknown
+): input is MarketStateBackfillProgressPayload {
+  const progress: Record<string, unknown> = readRecord(input);
+
+  return (
+    readString(progress, "jobId") !== undefined &&
+    ["idle", "running", "complete", "incomplete", "failed"].includes(
+      String(progress.status)
+    ) &&
+    isNonNegativeInteger(progress.requiredSessions) &&
+    isNonNegativeInteger(progress.completedSessions) &&
+    (
+      progress.currentInstrumentId === null ||
+      typeof progress.currentInstrumentId === "string"
+    ) &&
+    isNonNegativeInteger(progress.totalInstrumentCount) &&
+    isNonNegativeInteger(progress.completedInstrumentCount) &&
+    (
+      progress.error === null ||
+      typeof progress.error === "string"
+    )
+  );
+}
+
+function isMarketStateSignalId(
+  input: unknown
+): input is MarketStateSignalId {
+  return MARKET_STATE_SIGNAL_IDS.includes(input as MarketStateSignalId);
+}
+
+function isMarketStateSignalStatus(
+  input: unknown
+): input is MarketStateSignalStatus {
+  return [
+    "detected",
+    "notDetected",
+    "notApplicable",
+    "collecting",
+    "unavailable"
+  ].includes(String(input));
+}
+
+function isObservedMarketState(
+  input: unknown
+): input is ObservedMarketState {
+  return [
+    "BASELINE",
+    "AFTER_UP",
+    "AFTER_DOWN",
+    "UNAVAILABLE"
+  ].includes(String(input));
+}
+
+function isObservedMarketRiskState(
+  input: unknown
+): input is Exclude<ObservedMarketState, "UNAVAILABLE"> {
+  return ["BASELINE", "AFTER_UP", "AFTER_DOWN"].includes(String(input));
+}
+
+function isSha256(input: unknown): input is string {
+  return typeof input === "string" && /^[a-f0-9]{64}$/.test(input);
+}
+
+function isSessionDate(input: unknown): input is string {
+  return typeof input === "string" &&
+    /^\d{4}-\d{2}-\d{2}$/.test(input);
+}
+
+function isIsoTimestamp(input: unknown): input is string {
+  return (
+    typeof input === "string" &&
+    input.trim() !== "" &&
+    Number.isFinite(Date.parse(input))
+  );
+}
+
+function isNullableIsoTimestamp(input: unknown): input is string | null {
+  return input === null || isIsoTimestamp(input);
+}
+
+function isNullableFiniteNumber(input: unknown): input is number | null {
+  return input === null || (
+    typeof input === "number" &&
+    Number.isFinite(input)
+  );
+}
+
+function isFiniteNumber(input: unknown): input is number {
+  return typeof input === "number" && Number.isFinite(input);
+}
+
+function isProbability(input: unknown): input is number {
+  return isFiniteNumber(input) && input > 0 && input < 1;
+}
+
+function isNullablePercentile(input: unknown): input is number | null {
+  return (
+    input === null ||
+    (
+      typeof input === "number" &&
+      Number.isFinite(input) &&
+      input >= 0 &&
+      input <= 100
+    )
+  );
+}
+
+function isNonNegativeInteger(input: unknown): input is number {
+  return Number.isInteger(input) && Number(input) >= 0;
 }
 
 function readRecord(input: unknown): Record<string, unknown> {

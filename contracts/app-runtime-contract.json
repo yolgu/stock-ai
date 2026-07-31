@@ -36,6 +36,14 @@
     "quantIndicatorsRefreshCardResponse": "quant-indicators:refresh-card:response",
     "quantIndicatorsLatestSnapshotsRequest": "quant-indicators:latest-snapshots:request",
     "quantIndicatorsLatestSnapshotsResponse": "quant-indicators:latest-snapshots:response",
+    "marketStateRefreshWatchlistRequest": "market-state:refresh-watchlist:request",
+    "marketStateRefreshWatchlistResponse": "market-state:refresh-watchlist:response",
+    "marketStateLatestSnapshotsRequest": "market-state:latest-snapshots:request",
+    "marketStateLatestSnapshotsResponse": "market-state:latest-snapshots:response",
+    "marketStateTraceRequest": "market-state:trace:request",
+    "marketStateTraceResponse": "market-state:trace:response",
+    "marketStateHistoryRequest": "market-state:history:request",
+    "marketStateHistoryResponse": "market-state:history:response",
     "tossCredentialsReadStatusRequest": "settings:toss-credentials:read-status",
     "tossCredentialsReadStatusResponse": "settings:toss-credentials:read-status:response",
     "tossCredentialsSaveRequest": "settings:toss-credentials:save",
@@ -45,7 +53,7 @@
     "tossConnectionTestRequest": "settings:toss-connection:test",
     "tossConnectionTestResponse": "settings:toss-connection:test:response"
   },
-  "capabilities": ["watchlist", "quantIndicators", "llmInsights", "orders"],
+  "capabilities": ["watchlist", "quantIndicators", "marketState", "llmInsights", "orders"],
   "errorCodes": [
     "invalid_request",
     "runtime_profile_unavailable",
@@ -67,6 +75,9 @@
     "market_calendar_unavailable",
     "quant_indicator_unavailable",
     "quant_indicator_snapshot_not_found",
-    "quant_indicator_calculation_failed"
+    "quant_indicator_calculation_failed",
+    "market_state_unavailable",
+    "market_state_snapshot_not_found",
+    "market_state_calculation_failed"
   ]
 }

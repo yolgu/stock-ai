@@ -1,13 +1,17 @@
 import type { WatchStockCardDto } from "../domain/watchlist/Watchlist";
 import type {
+  MarketStateFormulaSnapshotPayload,
+  MarketStateHistoryPayload,
+  MarketStateSignalId,
+  MarketStateSignalStatus,
+  MarketStateTracePayload,
   MarketDataSnapshotPayload,
   QuantIndicatorExplanationTracePayload,
   QuantIndicatorDecisionStatus,
   QuantIndicatorSeverity,
   QuantIndicatorSignalKey,
-  QuantIndicatorSnapshotPayload,
-  ProfitTakingPressureCauseKey,
-  ProfitTakingPressureCausePayload
+  QuantIndicatorSignalPayload,
+  QuantIndicatorSnapshotPayload
 } from "../shared/contracts/app-runtime-contract";
 import type { QuantIndicatorLoadStatus } from "./useQuantIndicators";
 
@@ -38,6 +42,7 @@ export interface WatchStockCardViewModel {
   quantUpdatedAtLabel: string;
   nextCheckLabel: string | null;
   signalChips: QuantSignalChipViewModel[];
+  marketState: MarketStateViewModel;
 }
 
 export interface MarketContextViewModel {
@@ -79,25 +84,6 @@ export interface BeginnerExplanationSectionViewModel {
   inputs: QuantIndicatorExplanationTracePayload["inputs"];
 }
 
-export interface ProfitTakingRiskCauseViewModel {
-  key: ProfitTakingPressureCauseKey;
-  label: string;
-  score: number | null;
-  scoreLabel: string;
-  statusLabel: string;
-  severity: QuantIndicatorSeverity;
-  reason: string | null;
-}
-
-export interface ProfitTakingRiskViewModel {
-  title: string;
-  scoreLabel: string;
-  statusLabel: string;
-  summary: string;
-  severity: QuantIndicatorSeverity;
-  causes: ProfitTakingRiskCauseViewModel[];
-}
-
 export interface ConditionalZoneViewModel {
   key: "watch" | "entry" | "invalidated";
   title: string;
@@ -120,12 +106,34 @@ export interface DetailPanelViewModel {
   tagsText: string;
   groupText: string;
   checklistRows: QuantChecklistRowViewModel[];
-  profitTakingRisk: ProfitTakingRiskViewModel;
   conditionalZones: ConditionalZoneViewModel[];
   dataQuality: DataQualityViewModel;
   explanationSections: BeginnerExplanationSectionViewModel[];
   aiInsightLabel: string;
   quantUpdatedAtLabel: string;
+  marketState: MarketStateDetailViewModel;
+}
+
+export interface MarketStateSignalCellViewModel {
+  signalId: MarketStateSignalId;
+  displayName: string;
+  status: MarketStateSignalStatus;
+  statusLabel: string;
+  percentileLabel: string;
+  lastDetectionLabel: string | null;
+}
+
+export interface MarketStateViewModel {
+  asOfLabel: string;
+  observedStateLabel: string;
+  signals: MarketStateSignalCellViewModel[];
+}
+
+export interface MarketStateDetailViewModel extends MarketStateViewModel {
+  selectedSignalId: MarketStateSignalId;
+  selectedSignal: MarketStateSignalCellViewModel;
+  trace: MarketStateTracePayload | null;
+  history: MarketStateHistoryPayload | null;
 }
 
 export const CARD_STATUS_FILTER_OPTIONS: CardStatusFilterOption[] = [
@@ -162,7 +170,6 @@ const indicatorOrder: QuantIndicatorSignalKey[] = [
   "distanceProfile",
   "rsiMomentum",
   "atrStop",
-  "profitTakingPressure",
   "riskReward",
   "marketSentimentScore",
   "intradayTradeScore"
@@ -173,6 +180,7 @@ export function createWatchStockCardViewModel(input: {
   marketDataSnapshot: MarketDataSnapshotPayload | null;
   quantIndicatorSnapshot: QuantIndicatorSnapshotPayload | null;
   quantIndicatorStatus: QuantIndicatorLoadStatus;
+  marketStateSnapshot?: MarketStateFormulaSnapshotPayload | null;
 }): WatchStockCardViewModel {
   return {
     card: input.card,
@@ -193,16 +201,33 @@ export function createWatchStockCardViewModel(input: {
     ),
     nextCheckLabel: input.quantIndicatorSnapshot?.nextCheckLabel ?? null,
     signalChips:
-      input.quantIndicatorSnapshot?.signals.slice(0, 3).map((signal) => {
-        const finalValue = formatIndicatorFinalValue(input.quantIndicatorSnapshot, signal.key);
+      input.quantIndicatorSnapshot?.signals
+        .filter(
+          (signal: QuantIndicatorSignalPayload): boolean =>
+            signal.key !== "profitTakingPressure"
+        )
+        .slice(0, 3)
+        .map(
+          (
+            signal: QuantIndicatorSignalPayload
+          ): QuantSignalChipViewModel => {
+            const finalValue: string | null =
+              formatIndicatorFinalValue(
+                input.quantIndicatorSnapshot,
+                signal.key
+              );
 
-        return {
-          key: signal.key,
-          label: signal.label,
-          displayLabel: appendFinalValue(signal.label, finalValue),
-          severity: signal.severity
-        };
-      }) ?? []
+            return {
+              key: signal.key,
+              label: signal.label,
+              displayLabel: appendFinalValue(signal.label, finalValue),
+              severity: signal.severity
+            };
+          }
+        ) ?? [],
+    marketState: createMarketStateViewModel(
+      input.marketStateSnapshot ?? null
+    )
   };
 }
 
@@ -211,6 +236,10 @@ export function createDetailPanelViewModel(input: {
   marketDataSnapshot: MarketDataSnapshotPayload | null;
   quantIndicatorSnapshot: QuantIndicatorSnapshotPayload | null;
   quantIndicatorStatus: QuantIndicatorLoadStatus;
+  marketStateSnapshot?: MarketStateFormulaSnapshotPayload | null;
+  selectedMarketStateSignalId?: MarketStateSignalId;
+  marketStateTrace?: MarketStateTracePayload | null;
+  marketStateHistory?: MarketStateHistoryPayload | null;
 }): DetailPanelViewModel {
   return {
     title: input.card.displayName,
@@ -223,10 +252,6 @@ export function createDetailPanelViewModel(input: {
     tagsText: input.card.tags.join(", "),
     groupText: input.card.groupId ?? "",
     checklistRows: createChecklistRows(input.quantIndicatorSnapshot),
-    profitTakingRisk: createProfitTakingRisk(
-      input.quantIndicatorSnapshot,
-      input.quantIndicatorStatus
-    ),
     conditionalZones: createConditionalZones(input.quantIndicatorSnapshot),
     dataQuality: createDataQuality(input.marketDataSnapshot, input.quantIndicatorSnapshot),
     explanationSections: createExplanationSections(input.quantIndicatorSnapshot),
@@ -234,8 +259,144 @@ export function createDetailPanelViewModel(input: {
     quantUpdatedAtLabel: formatQuantUpdatedAt(
       input.quantIndicatorSnapshot,
       input.quantIndicatorStatus
+    ),
+    marketState: createMarketStateDetailViewModel({
+      snapshot: input.marketStateSnapshot ?? null,
+      selectedSignalId:
+        input.selectedMarketStateSignalId ?? "FOMO_LIKE",
+      trace: input.marketStateTrace ?? null,
+      history: input.marketStateHistory ?? null
+    })
+  };
+}
+
+const marketStateSignalOrder: readonly MarketStateSignalId[] = [
+  "FOMO_LIKE",
+  "PANIC_LIKE",
+  "PROFIT_TAKING_PROXY",
+  "PERSISTENT_RECOVERY",
+  "EFFICIENT_UPTREND"
+];
+
+const marketStateSignalLabels: Record<MarketStateSignalId, string> = {
+  FOMO_LIKE: "FOMO",
+  PANIC_LIKE: "패닉",
+  PROFIT_TAKING_PROXY: "차익실현",
+  PERSISTENT_RECOVERY: "회복",
+  EFFICIENT_UPTREND: "상승세"
+};
+
+export function createMarketStateViewModel(
+  snapshot: MarketStateFormulaSnapshotPayload | null
+): MarketStateViewModel {
+  const signalsById: Map<
+    MarketStateSignalId,
+    MarketStateFormulaSnapshotPayload["signals"][number]
+  > = new Map(
+    snapshot?.signals.map(
+      (
+        signal: MarketStateFormulaSnapshotPayload["signals"][number]
+      ): [
+        MarketStateSignalId,
+        MarketStateFormulaSnapshotPayload["signals"][number]
+      ] => [signal.signalId, signal]
+    ) ?? []
+  );
+
+  return {
+    asOfLabel:
+      snapshot === null || snapshot.sessionDate === ""
+        ? "5분봉 판정 대기"
+        : `${formatSnapshotTime(snapshot.asOf).slice(0, 5)} 확정`,
+    observedStateLabel:
+      snapshot?.observedStateLabel ?? "데이터 부족",
+    signals: marketStateSignalOrder.map(
+      (signalId: MarketStateSignalId): MarketStateSignalCellViewModel => {
+        const signal = signalsById.get(signalId);
+
+        return {
+          signalId,
+          displayName:
+            signal?.displayName ?? marketStateSignalLabels[signalId],
+          status: signal?.status ?? "collecting",
+          statusLabel: formatMarketStateStatus(
+            signal?.status ?? "collecting"
+          ),
+          percentileLabel:
+            signal?.percentile === null ||
+            signal?.percentile === undefined
+              ? "—"
+              : signal.percentile.toFixed(1),
+          lastDetectionLabel: formatLastDetection(
+            signal?.currentDetectionStartedAt ?? null,
+            signal?.lastDetectedAt ?? null
+          )
+        };
+      }
     )
   };
+}
+
+function createMarketStateDetailViewModel(input: {
+  snapshot: MarketStateFormulaSnapshotPayload | null;
+  selectedSignalId: MarketStateSignalId;
+  trace: MarketStateTracePayload | null;
+  history: MarketStateHistoryPayload | null;
+}): MarketStateDetailViewModel {
+  const summary: MarketStateViewModel = createMarketStateViewModel(
+    input.snapshot
+  );
+  const selectedSignal: MarketStateSignalCellViewModel =
+    summary.signals.find(
+      (signal: MarketStateSignalCellViewModel): boolean =>
+        signal.signalId === input.selectedSignalId
+    ) ?? summary.signals[0];
+
+  return {
+    ...summary,
+    selectedSignalId: input.selectedSignalId,
+    selectedSignal,
+    trace:
+      input.trace?.signalId === input.selectedSignalId
+        ? input.trace
+        : null,
+    history:
+      input.history?.signalId === input.selectedSignalId
+        ? input.history
+        : null
+  };
+}
+
+function formatMarketStateStatus(
+  status: MarketStateSignalStatus
+): string {
+  switch (status) {
+    case "detected":
+      return "감지";
+    case "notDetected":
+      return "미감지";
+    case "notApplicable":
+      return "대상 아님";
+    case "collecting":
+      return "수집 중";
+    case "unavailable":
+      return "계산 불가";
+  }
+}
+
+function formatLastDetection(
+  currentDetectionStartedAt: string | null,
+  lastDetectedAt: string | null
+): string | null {
+  if (currentDetectionStartedAt !== null) {
+    return `${formatSnapshotTime(currentDetectionStartedAt).slice(0, 5)}부터 감지`;
+  }
+
+  if (lastDetectedAt !== null) {
+    return `최근 감지 ${formatSnapshotTime(lastDetectedAt).slice(0, 5)}`;
+  }
+
+  return null;
 }
 
 function createMarketContext(
@@ -405,148 +566,30 @@ function createExplanationSections(
   snapshot: QuantIndicatorSnapshotPayload | null
 ): BeginnerExplanationSectionViewModel[] {
   return (
-    snapshot?.explanationTraces.map((trace) => ({
-      key: trace.key,
-      title: trace.title,
-      source: trace.source,
-      meaning: trace.meaning,
-      usage: trace.usage,
-      originalFormula: trace.originalFormula,
-      substitutedFormula: trace.substitutedFormula,
-      result: trace.result,
-      judgment: trace.judgment,
-      caution: trace.caution,
-      limitation: trace.limitation,
-      inputs: trace.inputs
-    })) ?? []
-  );
-}
-
-const profitTakingCauseLabels: Record<ProfitTakingPressureCauseKey, string> = {
-  profitBurden: "수익권 부담",
-  realizedSellPressure: "실제 매도 압력",
-  overheadSupplyPressure: "위쪽 매물 부담",
-  liquidityImpactRisk: "체결 환경 위험"
-};
-
-const profitTakingCauseOrder: ProfitTakingPressureCauseKey[] = [
-  "profitBurden",
-  "realizedSellPressure",
-  "overheadSupplyPressure",
-  "liquidityImpactRisk"
-];
-
-function createProfitTakingRisk(
-  snapshot: QuantIndicatorSnapshotPayload | null,
-  quantIndicatorStatus: QuantIndicatorLoadStatus
-): ProfitTakingRiskViewModel {
-  const indicator = snapshot?.indicators.profitTakingPressure ?? null;
-
-  if (indicator === null || indicator.status === "unavailable") {
-    return {
-      title: "차익실현 리스크",
-      scoreLabel: "--",
-      statusLabel: resolveUnavailableProfitTakingRiskStatusLabel(
-        indicator?.label ?? null,
-        quantIndicatorStatus
-      ),
-      summary: resolveUnavailableProfitTakingRiskSummary(quantIndicatorStatus),
-      severity: indicator?.severity ?? "unavailable",
-      causes: profitTakingCauseOrder.map((key) =>
-        createUnavailableProfitTakingCauseViewModel(key, indicator?.causes[key] ?? null)
+    snapshot?.explanationTraces
+      .filter(
+        (trace: QuantIndicatorExplanationTracePayload): boolean =>
+          trace.key !== "profitTakingPressure"
       )
-    };
-  }
-
-  const causes = profitTakingCauseOrder.map((key) =>
-    createProfitTakingCauseViewModel(key, indicator.causes[key])
+      .map(
+        (
+          trace: QuantIndicatorExplanationTracePayload
+        ): BeginnerExplanationSectionViewModel => ({
+          key: trace.key,
+          title: trace.title,
+          source: trace.source,
+          meaning: trace.meaning,
+          usage: trace.usage,
+          originalFormula: trace.originalFormula,
+          substitutedFormula: trace.substitutedFormula,
+          result: trace.result,
+          judgment: trace.judgment,
+          caution: trace.caution,
+          limitation: trace.limitation,
+          inputs: trace.inputs
+        })
+      ) ?? []
   );
-  const strongestCause = [...causes]
-    .filter((cause) => cause.score !== null)
-    .sort((left, right) => (right.score ?? -1) - (left.score ?? -1))[0];
-
-  return {
-    title: "차익실현 리스크",
-    scoreLabel: formatScore(indicator.score) ?? "--",
-    statusLabel: indicator.label,
-    summary: resolveProfitTakingRiskSummary(strongestCause, quantIndicatorStatus),
-    severity: indicator.severity,
-    causes
-  };
-}
-
-function resolveUnavailableProfitTakingRiskStatusLabel(
-  fallbackLabel: string | null,
-  quantIndicatorStatus: QuantIndicatorLoadStatus
-): string {
-  if (quantIndicatorStatus === "error") {
-    return "차익실현 리스크 계산 실패";
-  }
-
-  if (quantIndicatorStatus === "emptyLoading") {
-    return "차익실현 리스크 계산 중";
-  }
-
-  return fallbackLabel ?? "차익실현 리스크 계산 중";
-}
-
-function resolveUnavailableProfitTakingRiskSummary(
-  quantIndicatorStatus: QuantIndicatorLoadStatus
-): string {
-  if (quantIndicatorStatus === "error") {
-    return "첫 계산에 실패했습니다. 다음 데이터 수집 때 다시 계산합니다.";
-  }
-
-  return "시장 데이터가 모이면 원인별 점수를 표시합니다.";
-}
-
-function resolveProfitTakingRiskSummary(
-  strongestCause: ProfitTakingRiskCauseViewModel | undefined,
-  quantIndicatorStatus: QuantIndicatorLoadStatus
-): string {
-  if (quantIndicatorStatus === "refreshing") {
-    return "기존 점수를 유지하며 새 데이터를 반영 중입니다.";
-  }
-
-  if (quantIndicatorStatus === "failedRefresh") {
-    return "최근값 유지 중입니다. 다음 갱신에서 다시 계산합니다.";
-  }
-
-  if (strongestCause === undefined) {
-    return "원인별 점수가 아직 충분하지 않습니다.";
-  }
-
-  return `${strongestCause.label}이 현재 점수에 가장 크게 기여합니다.`;
-}
-
-function createProfitTakingCauseViewModel(
-  key: ProfitTakingPressureCauseKey,
-  cause: ProfitTakingPressureCausePayload
-): ProfitTakingRiskCauseViewModel {
-  return {
-    key,
-    label: profitTakingCauseLabels[key],
-    score: cause.score,
-    scoreLabel: formatScore(cause.score) ?? "--",
-    statusLabel: cause.label,
-    severity: cause.severity,
-    reason: cause.reason
-  };
-}
-
-function createUnavailableProfitTakingCauseViewModel(
-  key: ProfitTakingPressureCauseKey,
-  cause: ProfitTakingPressureCausePayload | null
-): ProfitTakingRiskCauseViewModel {
-  return {
-    key,
-    label: profitTakingCauseLabels[key],
-    score: null,
-    scoreLabel: "--",
-    statusLabel: cause?.label ?? "계산 대기",
-    severity: cause?.severity ?? "unavailable",
-    reason: cause?.reason ?? null
-  };
 }
 
 function createConditionalZones(

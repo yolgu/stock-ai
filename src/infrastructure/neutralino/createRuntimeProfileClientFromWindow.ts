@@ -16,6 +16,10 @@ import {
   type QuantIndicatorClient
 } from "./NeutralinoQuantIndicatorClient";
 import {
+  NeutralinoMarketStateClient,
+  type MarketStateClient
+} from "./NeutralinoMarketStateClient";
+import {
   NeutralinoTossSettingsClient,
   type SaveTossCredentialsInput,
   type TossSettingsClient
@@ -133,6 +137,24 @@ class MissingNeutralinoQuantIndicatorClient implements QuantIndicatorClient {
   }
 }
 
+class MissingNeutralinoMarketStateClient implements MarketStateClient {
+  public async refreshWatchlist(): Promise<never> {
+    throw createMissingRuntimeError();
+  }
+
+  public async readLatestSnapshots(): Promise<never> {
+    throw createMissingRuntimeError();
+  }
+
+  public async readTrace(): Promise<never> {
+    throw createMissingRuntimeError();
+  }
+
+  public async readHistory(): Promise<never> {
+    throw createMissingRuntimeError();
+  }
+}
+
 class MissingNeutralinoTossSettingsClient implements TossSettingsClient {
   public async readStatus(): Promise<TossCredentialStatusPayload> {
     throw createMissingRuntimeError();
@@ -232,6 +254,19 @@ export function createQuantIndicatorClientFromNeutralinoApi(
   }
 
   return new NeutralinoQuantIndicatorClient({
+    extensions: neutralinoApi.extensions,
+    events: neutralinoApi.events
+  });
+}
+
+export function createMarketStateClientFromNeutralinoApi(
+  neutralinoApi: NeutralinoRuntimeApi | undefined
+): MarketStateClient {
+  if (neutralinoApi === undefined) {
+    return new MissingNeutralinoMarketStateClient();
+  }
+
+  return new NeutralinoMarketStateClient({
     extensions: neutralinoApi.extensions,
     events: neutralinoApi.events
   });

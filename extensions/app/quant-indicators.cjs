@@ -1150,7 +1150,6 @@ function calculateMarketSentimentScore(indicators) {
     indicators.spread,
     indicators.atrStop,
     indicators.supplyPressure,
-    indicators.profitTakingPressure,
     indicators.riskReward,
     indicators.velocityAcceleration,
     indicators.distanceProfile,
@@ -1217,7 +1216,6 @@ function classifyCardDecision(indicators) {
     indicators.spread,
     indicators.atrStop,
     indicators.supplyPressure,
-    indicators.profitTakingPressure,
     indicators.riskReward
   ];
 
@@ -1241,7 +1239,6 @@ function classifyCardDecision(indicators) {
     indicators.spread.severity === "danger" ||
     indicators.atrStop.severity === "danger" ||
     indicators.supplyPressure.severity === "danger" ||
-    indicators.profitTakingPressure.severity === "danger" ||
     indicators.riskReward.severity === "danger"
   ) {
     return {
@@ -1257,7 +1254,6 @@ function classifyCardDecision(indicators) {
     indicators.spread.severity === "warning" ||
     indicators.atrStop.severity === "warning" ||
     indicators.supplyPressure.severity === "warning" ||
-    indicators.profitTakingPressure.severity === "warning" ||
     indicators.riskReward.severity === "warning"
   ) {
     return {
@@ -1281,7 +1277,6 @@ function calculateQuality(indicators) {
     indicators.spread,
     indicators.atrStop,
     indicators.supplyPressure,
-    indicators.profitTakingPressure,
     indicators.riskReward
   ];
   const unavailableCount = values.filter((indicator) => indicator.status === "unavailable").length;
@@ -1304,7 +1299,6 @@ function selectSignals(indicators, decisionStatus) {
   const priority = [
     "vwap",
     "cvd",
-    "profitTakingPressure",
     "spread",
     "atrStop",
     "supplyPressure",
@@ -1696,7 +1690,6 @@ function createExplanationTraces(observations, indicators) {
     createRsiMomentumTrace(indicators.rsiMomentum),
     createAtrStopTrace(indicators.atrStop),
     createSupplyPressureTrace(indicators.supplyPressure),
-    createProfitTakingPressureTrace(indicators.profitTakingPressure),
     createRiskRewardTrace(indicators.riskReward),
     createMarketSentimentScoreTrace(indicators.marketSentimentScore),
     createIntradayTradeScoreTrace(indicators.intradayTradeScore)
@@ -1963,48 +1956,6 @@ function createSupplyPressureTrace(indicator) {
     judgment: indicator.label,
     caution: "1분봉 volume bucket 기반 추정이며 실제 주문 대기 물량과 다릅니다.",
     limitation: "실제 매물대가 아니라 1분봉 거래량 분포로 추정한 참고값입니다."
-  };
-}
-
-function createProfitTakingPressureTrace(indicator) {
-  const causes = indicator.causes || createUnavailableProfitTakingCauses();
-
-  return {
-    key: "profitTakingPressure",
-    title: "차익실현 리스크",
-    source: "당일 1분봉 거래량 분포, VWAP, ATR, 체결 방향 추정, 호가 잔량",
-    originalFormula: [
-      "차익실현 리스크 = 0.35×수익권 부담 + 0.30×실제 매도 압력 + 0.25×위쪽 매물 부담 + 0.10×체결 환경 위험",
-      "수익권 부담 = 수익권 물량 + ATR 조정 이익 폭 + VWAP/ATR 이격"
-    ],
-    substitutedFormula: indicator.status === "available"
-      ? [
-          `점수 = 0.35×${formatNullableScore(causes.profitBurden.score)} + 0.30×${formatNullableScore(causes.realizedSellPressure.score)} + 0.25×${formatNullableScore(causes.overheadSupplyPressure.score)} + 0.10×${formatNullableScore(causes.liquidityImpactRisk.score)}`
-        ]
-      : ["현재가, 1분봉 거래량, VWAP 또는 ATR이 부족해 대입할 수 없습니다."],
-    result: indicator.status === "available"
-      ? [
-          `차익실현 리스크 = ${indicator.score}점`,
-          `수익권 부담 = ${formatNullableScore(causes.profitBurden.score)}점`,
-          `실제 매도 압력 = ${formatNullableScore(causes.realizedSellPressure.score)}점`,
-          `위쪽 매물 부담 = ${formatNullableScore(causes.overheadSupplyPressure.score)}점`,
-          `체결 환경 위험 = ${formatNullableScore(causes.liquidityImpactRisk.score)}점`
-        ]
-      : ["차익실현 리스크 계산 불가"],
-    inputs: indicator.status === "available"
-      ? [
-          { label: "수익권 물량 비율", value: String(indicator.profitLongRatio) },
-          { label: "VWAP/ATR 이격", value: String(indicator.vwapAtrExtension) },
-          { label: "매도 체결 압력", value: String(indicator.sellFlowPressure) },
-          { label: "매도호가 압력", value: String(indicator.askBookPressure) },
-          { label: "위쪽 매물 부담", value: formatNullableScore(causes.overheadSupplyPressure.score) }
-        ]
-      : [],
-    meaning: "수익권 물량, 실제 매도 압력, 위쪽 매물 부담, 체결 환경을 나눠 보는 내부 추정 지표입니다.",
-    usage: "점수 하나보다 어떤 원인이 리스크를 키우는지 확인합니다.",
-    judgment: indicator.label,
-    caution: "표준 공식명이 아니며 매수·매도 추천으로 해석하지 않습니다.",
-    limitation: "표준 공식명이 아니라 앱 내부 추정 지표이며 실제 보유자 원가나 매도 의도를 알 수 없습니다."
   };
 }
 
@@ -2316,10 +2267,6 @@ function formatPlainNumber(value) {
   }
 
   return String(roundTo(decimal, 4)).replace(/\.0+$/, "");
-}
-
-function formatNullableScore(value) {
-  return typeof value === "number" && Number.isFinite(value) ? String(value) : "--";
 }
 
 function formatSignedPercent(value) {

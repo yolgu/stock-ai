@@ -97,6 +97,80 @@ describe("app extension message handler", () => {
     });
   });
 
+  it("returns five explicit market-state results for a symbol outside the frozen roster", async () => {
+    const handler = createAppMessageHandler({
+      storageDirectory: await createStorageDirectory()
+    });
+
+    await handler(
+      JSON.stringify({
+        event: "watchlist:create:request",
+        data: {
+          event: "watchlist:create:request",
+          requestId: "request-card",
+          occurredAt: "2026-07-31T09:00:00.000Z",
+          payload: {
+            id: "card-kr",
+            market: "KOSPI",
+            symbol: "005930",
+            displayName: "삼성전자",
+            groupId: null,
+            tags: [],
+            memo: ""
+          }
+        }
+      }),
+      () => "2026-07-31T09:00:01.000Z"
+    );
+    const response = await handler(
+      JSON.stringify({
+        event: "market-state:refresh-watchlist:request",
+        data: {
+          event: "market-state:refresh-watchlist:request",
+          requestId: "request-market-state",
+          occurredAt: "2026-07-31T09:00:02.000Z",
+          payload: {
+            cardIds: ["card-kr"]
+          }
+        }
+      }),
+      () => "2026-07-31T09:00:03.000Z"
+    );
+
+    expect(response).toMatchObject({
+      event: "market-state:refresh-watchlist:response",
+      requestId: "request-market-state",
+      payload: {
+        snapshots: [
+          {
+            cardId: "card-kr",
+            symbol: "005930",
+            observedState: "UNAVAILABLE",
+            signals: [
+              { signalId: "FOMO_LIKE", status: "unavailable" },
+              { signalId: "PANIC_LIKE", status: "unavailable" },
+              {
+                signalId: "PROFIT_TAKING_PROXY",
+                status: "unavailable"
+              },
+              {
+                signalId: "PERSISTENT_RECOVERY",
+                status: "unavailable"
+              },
+              {
+                signalId: "EFFICIENT_UPTREND",
+                status: "unavailable"
+              }
+            ]
+          }
+        ],
+        backfillProgress: {
+          status: "idle"
+        }
+      }
+    });
+  });
+
   it("handles Toss credential save and connection test without returning secrets", async () => {
     const fetcher = async (): Promise<Response> =>
       new Response(

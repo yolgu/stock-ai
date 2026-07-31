@@ -2,6 +2,8 @@ const crypto = require("node:crypto");
 const fs = require("node:fs/promises");
 const path = require("node:path");
 
+const fileOperationQueues = new Map();
+
 class StorageError extends Error {
   constructor(code, message, recoverable) {
     super(message);
@@ -18,6 +20,10 @@ class JsonFileStore {
   }
 
   async read() {
+    return this.readUnlocked();
+  }
+
+  async readUnlocked() {
     try {
       const text = await fs.readFile(this.filePath, "utf8");
 
@@ -40,9 +46,23 @@ class JsonFileStore {
   }
 
   async write(value) {
+    return enqueueFileOperation(this.filePath, () => this.writeUnlocked(value));
+  }
+
+  async update(updater) {
+    return enqueueFileOperation(this.filePath, async () => {
+      const currentValue = await this.readUnlocked();
+      const nextValue = await updater(currentValue);
+      await this.writeUnlocked(nextValue);
+
+      return nextValue;
+    });
+  }
+
+  async writeUnlocked(value) {
     await fs.mkdir(path.dirname(this.filePath), { recursive: true });
 
-    const temporaryPath = `${this.filePath}.${process.pid}.${Date.now()}.tmp`;
+    const temporaryPath = `${this.filePath}.${process.pid}.${crypto.randomUUID()}.tmp`;
     await fs.writeFile(temporaryPath, `${JSON.stringify(value, null, 2)}\n`, {
       encoding: "utf8",
       mode: 0o600
@@ -50,6 +70,24 @@ class JsonFileStore {
     await fs.chmod(temporaryPath, 0o600);
     await fs.rename(temporaryPath, this.filePath);
     await fs.chmod(this.filePath, 0o600);
+  }
+}
+
+async function enqueueFileOperation(filePath, operation) {
+  const queueKey = path.resolve(filePath);
+  const previousOperation = fileOperationQueues.get(queueKey) || Promise.resolve();
+  const currentOperation = previousOperation
+    .catch(() => undefined)
+    .then(operation);
+  const queueTail = currentOperation.catch(() => undefined);
+  fileOperationQueues.set(queueKey, queueTail);
+
+  try {
+    return await currentOperation;
+  } finally {
+    if (fileOperationQueues.get(queueKey) === queueTail) {
+      fileOperationQueues.delete(queueKey);
+    }
   }
 }
 

@@ -52,8 +52,8 @@ describe("createQuantIndicatorSnapshot", () => {
       market: "NASDAQ",
       symbol: "MU",
       quality: "complete",
-      decisionStatus: "confirmationWaiting",
-      decisionLabel: "확인 대기",
+      decisionStatus: "watch",
+      decisionLabel: "관망",
       indicators: {
         basicReturn: {
           status: "available",
@@ -148,13 +148,14 @@ describe("createQuantIndicatorSnapshot", () => {
       expect.arrayContaining([
         expect.objectContaining({ key: "vwap", label: "VWAP 위 안착" }),
         expect.objectContaining({ key: "cvd", status: "estimated" }),
-        expect.objectContaining({ key: "profitTakingPressure", label: "차익실현 리스크 높음" })
+        expect.objectContaining({ key: "spread", label: "스프레드 정상" })
       ])
     );
     const explanationTraces = snapshot.explanationTraces as Array<Record<string, unknown>>;
     const basicReturnTrace = explanationTraces.find((trace) => trace.key === "basicReturn");
     const cvdTrace = explanationTraces.find((trace) => trace.key === "cvd");
-    const profitTakingPressureTrace = explanationTraces.find(
+    const profitTakingPressureTrace: Record<string, unknown> | undefined =
+      explanationTraces.find(
       (trace) => trace.key === "profitTakingPressure"
     );
 
@@ -168,21 +169,7 @@ describe("createQuantIndicatorSnapshot", () => {
       key: "cvd",
       limitation: "Toss 체결 데이터에 aggressor side가 없어 tick-rule로 추정합니다."
     });
-    expect(profitTakingPressureTrace).toMatchObject({
-      key: "profitTakingPressure",
-      title: "차익실현 리스크",
-      originalFormula: expect.arrayContaining([
-        "차익실현 리스크 = 0.35×수익권 부담 + 0.30×실제 매도 압력 + 0.25×위쪽 매물 부담 + 0.10×체결 환경 위험"
-      ]),
-      result: expect.arrayContaining([
-        "차익실현 리스크 = 65점",
-        "수익권 부담 = 100점",
-        "실제 매도 압력 = 3점",
-        "위쪽 매물 부담 = 0점",
-        "체결 환경 위험 = 56점"
-      ]),
-      limitation: "표준 공식명이 아니라 앱 내부 추정 지표이며 실제 보유자 원가나 매도 의도를 알 수 없습니다."
-    });
+    expect(profitTakingPressureTrace).toBeUndefined();
   });
 
   it("reports unavailable calculations when required market observations are missing", () => {
@@ -297,13 +284,13 @@ describe("createQuantIndicatorSnapshot", () => {
         },
         marketSentimentScore: {
           status: "available",
-          score: 82,
+          score: 85,
           label: "정량 심리 우호",
           severity: "positive"
         },
         intradayTradeScore: {
           status: "available",
-          conditionStrengthPercent: 96.08,
+          conditionStrengthPercent: 97.07,
           label: "조건 충족 강함",
           severity: "positive"
         }
@@ -317,14 +304,13 @@ describe("createQuantIndicatorSnapshot", () => {
         "velocityAcceleration",
         "distanceProfile",
         "rsiMomentum",
-        "profitTakingPressure",
         "marketSentimentScore",
         "intradayTradeScore"
       ])
     );
     expect(explanationTraces.find((trace) => trace.key === "intradayTradeScore")).toMatchObject({
       originalFormula: expect.arrayContaining(["조건 충족 강도 = sigmoid((정량 심리 점수 - 50) / 10) × 100"]),
-      result: expect.arrayContaining(["조건 충족 강도 = 96.08%"])
+      result: expect.arrayContaining(["조건 충족 강도 = 97.07%"])
     });
   });
 
@@ -489,7 +475,7 @@ describe("StoredQuantIndicatorSnapshotRepository", () => {
       expect.objectContaining({
         cardId: "card-1",
         symbol: "MU",
-        decisionStatus: "confirmationWaiting",
+        decisionStatus: "watch",
         sourceMarketDataSnapshotId: "market-1"
       })
     ]);

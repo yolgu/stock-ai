@@ -2,7 +2,10 @@ const crypto = require("node:crypto");
 const path = require("node:path");
 
 const contract = require("../../contracts/app-runtime-contract.json");
-const { StoredWatchlistRepository } = require("./storage.cjs");
+const {
+  JsonFileStore,
+  StoredWatchlistRepository
+} = require("./storage.cjs");
 const {
   StoredTossCredentialRepository,
   TossOAuthClient
@@ -29,6 +32,16 @@ const {
   refreshQuantIndicatorsForCard,
   refreshQuantIndicatorsForWatchlist
 } = require("./quant-indicators.cjs");
+const {
+  MinuteHistoryBackfill
+} = require("./market-state/market-state-backfill.cjs");
+const {
+  MarketStateSnapshotRepository,
+  MinuteBarRepository
+} = require("./market-state/market-state-repository.cjs");
+const {
+  MarketStateApplicationService
+} = require("./market-state/market-state-service.cjs");
 
 function createDefaultRuntimeProfilePayload() {
   return {
@@ -44,6 +57,11 @@ function createDefaultRuntimeProfilePayload() {
         name: "quantIndicators",
         enabled: true,
         reason: "정량 지표 계산 준비됨"
+      },
+      {
+        name: "marketState",
+        enabled: true,
+        reason: "연구 기반 5분 시장상태 신호 준비됨"
       },
       {
         name: "llmInsights",
@@ -144,6 +162,17 @@ function createAppMessageHandler(options = {}) {
   const quantIndicatorSnapshotRepository = new StoredQuantIndicatorSnapshotRepository(
     path.join(storageDirectory, "quant-indicator-cache.local.json")
   );
+  const minuteBarRepository = new MinuteBarRepository(
+    path.join(storageDirectory, "market-state")
+  );
+  const marketStateSnapshotRepository =
+    new MarketStateSnapshotRepository(
+      path.join(
+        storageDirectory,
+        "market-state",
+        "formula-snapshots.local.json"
+      )
+    );
   const tossOAuthClient = new TossOAuthClient(options.fetcher || fetch);
   const tossAccessTokenProvider = new CachedTossAccessTokenProvider(
     tossCredentialRepository,
@@ -153,6 +182,27 @@ function createAppMessageHandler(options = {}) {
   const rateLimitAwareTossClient = new RateLimitAwareTossClient(options.fetcher || fetch);
   const tossMarketDataClient = new TossMarketDataClient(rateLimitAwareTossClient);
   const tossMarketInfoClient = new TossMarketInfoClient(rateLimitAwareTossClient);
+  const minuteHistoryBackfill = new MinuteHistoryBackfill({
+    minuteRepository: minuteBarRepository,
+    progressStore: new JsonFileStore(
+      path.join(
+        storageDirectory,
+        "market-state",
+        "backfill-progress.local.json"
+      ),
+      {}
+    ),
+    tossMarketDataClient,
+    tossAccessTokenProvider,
+    nowIso: () => new Date().toISOString()
+  });
+  const marketStateService = new MarketStateApplicationService({
+    watchlistRepository,
+    marketDataSnapshotRepository,
+    minuteRepository: minuteBarRepository,
+    snapshotRepository: marketStateSnapshotRepository,
+    backfill: minuteHistoryBackfill
+  });
 
   return async function handleAppMessage(rawMessage, nowIso) {
     const runtimeResponse = handleRuntimeProfileMessage(rawMessage, nowIso);
@@ -183,6 +233,7 @@ function createAppMessageHandler(options = {}) {
         tossStockInfoClient,
         marketDataSnapshotRepository,
         quantIndicatorSnapshotRepository,
+        marketStateService,
         tossMarketDataClient,
         tossMarketInfoClient
       });
@@ -366,6 +417,47 @@ async function handleAppRequest(context) {
       context.requestId,
       context.occurredAt,
       await readLatestQuantIndicatorSnapshots(context, context.payload)
+    );
+  }
+
+  if (context.event === contract.events.marketStateRefreshWatchlistRequest) {
+    return createAppResponse(
+      contract.events.marketStateRefreshWatchlistResponse,
+      context.requestId,
+      context.occurredAt,
+      await context.marketStateService.refresh(
+        context.payload,
+        context.occurredAt
+      )
+    );
+  }
+
+  if (context.event === contract.events.marketStateLatestSnapshotsRequest) {
+    return createAppResponse(
+      contract.events.marketStateLatestSnapshotsResponse,
+      context.requestId,
+      context.occurredAt,
+      await context.marketStateService.readLatest(context.payload)
+    );
+  }
+
+  if (context.event === contract.events.marketStateTraceRequest) {
+    return createAppResponse(
+      contract.events.marketStateTraceResponse,
+      context.requestId,
+      context.occurredAt,
+      {
+        trace: await context.marketStateService.readTrace(context.payload)
+      }
+    );
+  }
+
+  if (context.event === contract.events.marketStateHistoryRequest) {
+    return createAppResponse(
+      contract.events.marketStateHistoryResponse,
+      context.requestId,
+      context.occurredAt,
+      await context.marketStateService.readHistory(context.payload)
     );
   }
 

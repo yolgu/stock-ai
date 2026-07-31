@@ -156,12 +156,16 @@ class TossMarketDataClient {
     return payload.result || null;
   }
 
-  async fetchCandles(symbol, interval, accessToken, count = 100) {
+  async fetchCandles(symbol, interval, accessToken, count = 100, before = null) {
     const query = new URLSearchParams();
     query.set("symbol", normalizeSymbol(symbol));
     query.set("interval", interval);
     query.set("count", String(count));
     query.set("adjusted", "true");
+
+    if (typeof before === "string" && before.trim() !== "") {
+      query.set("before", before);
+    }
     const payload = await this.rateLimitClient.requestJson(
       `${MARKET_DATA_BASE_URL}/api/v1/candles?${query.toString()}`,
       createBearerRequest(accessToken),
@@ -352,13 +356,19 @@ async function refreshCards(context, cards) {
       context.occurredAt,
       "intraday"
     )
-      ? await collectObservation(adapterErrors, "intradayCandles", () =>
-          context.tossMarketDataClient.fetchCandles(card.symbol, "1m", accessToken, 100)
+      ? markCandlePageFetchedAt(
+          await collectObservation(adapterErrors, "intradayCandles", () =>
+            context.tossMarketDataClient.fetchCandles(card.symbol, "1m", accessToken, 100)
+          ),
+          context.occurredAt
         )
       : previousSnapshot.observations.intradayCandles;
     const dailyCandles = shouldRefreshCandles(previousSnapshot, context.occurredAt, "daily")
-      ? await collectObservation(adapterErrors, "dailyCandles", () =>
-          context.tossMarketDataClient.fetchCandles(card.symbol, "1d", accessToken, 100)
+      ? markCandlePageFetchedAt(
+          await collectObservation(adapterErrors, "dailyCandles", () =>
+            context.tossMarketDataClient.fetchCandles(card.symbol, "1d", accessToken, 100)
+          ),
+          context.occurredAt
         )
       : previousSnapshot.observations.dailyCandles;
     const country = resolveMarketCountry(card.market);
@@ -489,7 +499,11 @@ function createMarketDataSnapshot(input) {
       price: input.price === null ? null : normalizePrice(input.price),
       trades: Array.isArray(input.trades) ? input.trades.map(normalizeTrade) : [],
       orderbook: input.orderbook === null ? null : normalizeOrderbook(input.orderbook),
-      intradayCandles: normalizeCandlePage(input.intradayCandles, "1m"),
+      intradayCandles: normalizeCandlePage(
+        input.intradayCandles,
+        "1m",
+        input.capturedAt
+      ),
       dailyCandles: normalizeCandlePage(input.dailyCandles, "1d"),
       exchangeRate: input.exchangeRate === null ? null : normalizeExchangeRate(input.exchangeRate),
       marketSession: input.marketSession || null
@@ -519,10 +533,13 @@ function shouldRefreshCandles(previousSnapshot, now, candleType) {
     return true;
   }
 
-  const capturedAtMs = Date.parse(previousSnapshot.capturedAt);
+  const fetchedAt = typeof previousCandlePage.fetchedAt === "string"
+    ? previousCandlePage.fetchedAt
+    : previousSnapshot.capturedAt;
+  const fetchedAtMs = Date.parse(fetchedAt);
   const staleMs = candleType === "intraday" ? INTRADAY_CANDLE_STALE_MS : DAILY_CANDLE_STALE_MS;
 
-  return !Number.isFinite(capturedAtMs) || Date.parse(now) - capturedAtMs >= staleMs;
+  return !Number.isFinite(fetchedAtMs) || Date.parse(now) - fetchedAtMs >= staleMs;
 }
 
 function mapCalendarToMarketSession(country, calendar, now) {
@@ -738,16 +755,69 @@ function normalizeOrderbookEntries(entries) {
   }));
 }
 
-function normalizeCandlePage(candlePage, interval) {
+function markCandlePageFetchedAt(candlePage, fetchedAt) {
+  if (candlePage === null || candlePage === undefined) {
+    return null;
+  }
+
+  return {
+    ...candlePage,
+    fetchedAt
+  };
+}
+
+function normalizeCandlePage(candlePage, interval, completedBefore) {
   if (candlePage === null || candlePage === undefined) {
     return null;
   }
 
   return {
     interval,
-    candles: Array.isArray(candlePage.candles) ? candlePage.candles.map(normalizeCandle) : [],
+    fetchedAt: typeof candlePage.fetchedAt === "string" ? candlePage.fetchedAt : null,
+    candles: interval === "1m"
+      ? canonicalizeMinuteCandles(candlePage.candles, completedBefore)
+      : Array.isArray(candlePage.candles)
+        ? candlePage.candles.map(normalizeCandle)
+        : [],
     nextBefore: typeof candlePage.nextBefore === "string" ? candlePage.nextBefore : null
   };
+}
+
+function canonicalizeMinuteCandles(candles, completedBefore) {
+  if (!Array.isArray(candles)) {
+    return [];
+  }
+
+  const completedBeforeMs = Date.parse(completedBefore);
+
+  if (!Number.isFinite(completedBeforeMs)) {
+    return [];
+  }
+
+  const latestByMinute = new Map();
+
+  for (const candle of candles) {
+    const timestamp = String(candle && candle.timestamp || "");
+    const timestampMs = Date.parse(timestamp);
+
+    if (!Number.isFinite(timestampMs) || timestampMs >= completedBeforeMs) {
+      continue;
+    }
+
+    const minuteKey = Math.floor(timestampMs / 60_000);
+    const previous = latestByMinute.get(minuteKey);
+
+    if (previous === undefined || timestampMs >= previous.timestampMs) {
+      latestByMinute.set(minuteKey, {
+        timestampMs,
+        candle: normalizeCandle(candle)
+      });
+    }
+  }
+
+  return [...latestByMinute.values()]
+    .sort((left, right) => left.timestampMs - right.timestampMs)
+    .map((entry) => entry.candle);
 }
 
 function normalizeCandle(candle) {
@@ -873,6 +943,7 @@ module.exports = {
   StoredMarketDataSnapshotRepository,
   TossMarketDataClient,
   TossMarketInfoClient,
+  canonicalizeMinuteCandles,
   createMarketDataSnapshot,
   readLatestMarketDataSnapshots,
   refreshMarketDataForCard,

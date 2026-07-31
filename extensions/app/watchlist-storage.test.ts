@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createRequire } from "node:module";
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 const require = createRequire(import.meta.url);
 
@@ -11,6 +11,9 @@ const { JsonFileStore, StoredWatchlistRepository } = require("./storage.cjs") as
   JsonFileStore: new (filePath: string, defaultValue: unknown) => {
     read(): Promise<unknown>;
     write(value: unknown): Promise<void>;
+    update(
+      updater: (current: Record<string, number>) => Record<string, number>
+    ): Promise<Record<string, number>>;
   };
   StoredWatchlistRepository: new (filePath: string) => {
     list(): Promise<unknown>;
@@ -58,6 +61,40 @@ describe("extension JSON persistence", () => {
       code: "storage_corrupted",
       recoverable: true
     });
+  });
+
+  it("serializes same-millisecond writes without temporary-file collisions", async () => {
+    const filePath = await createTempPath("concurrent-write.json");
+    const store = new JsonFileStore(filePath, { value: 0 });
+    const nowSpy = vi.spyOn(Date, "now").mockReturnValue(1_000);
+
+    try {
+      await expect(Promise.all([
+        store.write({ value: 1 }),
+        store.write({ value: 2 })
+      ])).resolves.toBeDefined();
+    } finally {
+      nowSpy.mockRestore();
+    }
+
+    expect(await store.read()).toEqual({ value: 2 });
+  });
+
+  it("preserves every concurrent read-modify-write update", async () => {
+    const filePath = await createTempPath("concurrent-update.json");
+    const firstStore = new JsonFileStore(filePath, { count: 0 });
+    const secondStore = new JsonFileStore(filePath, { count: 0 });
+    const increment = (current: Record<string, number>): Record<string, number> => ({
+      count: current.count + 1
+    });
+
+    await Promise.all(
+      Array.from({ length: 20 }, (_unused: unknown, index: number) =>
+        (index % 2 === 0 ? firstStore : secondStore).update(increment)
+      )
+    );
+
+    expect(await firstStore.read()).toEqual({ count: 20 });
   });
 
   it("persists watchlist CRUD results without deleted cards", async () => {

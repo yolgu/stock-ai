@@ -2,6 +2,7 @@ import { useMemo, type ReactElement } from "react";
 
 import {
   createMarketDataClientFromNeutralinoApi,
+  createMarketStateClientFromNeutralinoApi,
   createQuantIndicatorClientFromNeutralinoApi,
   createRuntimeProfileClientFromWindow,
   createStockReferenceClientFromNeutralinoApi,
@@ -9,6 +10,7 @@ import {
   createWatchlistClientFromNeutralinoApi
 } from "./infrastructure/neutralino/createRuntimeProfileClientFromWindow";
 import type { MarketDataClient } from "./infrastructure/neutralino/NeutralinoMarketDataClient";
+import type { MarketStateClient } from "./infrastructure/neutralino/NeutralinoMarketStateClient";
 import type { QuantIndicatorClient } from "./infrastructure/neutralino/NeutralinoQuantIndicatorClient";
 import type { RuntimeProfileClient } from "./infrastructure/neutralino/NeutralinoRuntimeProfileClient";
 import type { StockReferenceClient } from "./infrastructure/neutralino/NeutralinoStockReferenceClient";
@@ -23,6 +25,7 @@ export interface AppProps {
   watchlistClient?: WatchlistClient;
   stockReferenceClient?: StockReferenceClient;
   marketDataClient?: MarketDataClient;
+  marketStateClient?: MarketStateClient;
   quantIndicatorClient?: QuantIndicatorClient;
   tossSettingsClient?: TossSettingsClient;
 }
@@ -32,6 +35,7 @@ export function App({
   watchlistClient,
   stockReferenceClient,
   marketDataClient,
+  marketStateClient,
   quantIndicatorClient,
   tossSettingsClient
 }: AppProps): ReactElement {
@@ -66,6 +70,12 @@ export function App({
       quantIndicatorClient ?? createQuantIndicatorClientFromNeutralinoApi(neutralinoWindowApi),
     [neutralinoWindowApi, quantIndicatorClient]
   );
+  const activeMarketStateClient = useMemo(
+    () =>
+      marketStateClient ??
+      createMarketStateClientFromNeutralinoApi(neutralinoWindowApi),
+    [marketStateClient, neutralinoWindowApi]
+  );
   const runtimeProfileState = useRuntimeProfile(client);
 
   if (runtimeProfileState.status === "ready") {
@@ -75,6 +85,7 @@ export function App({
         watchlistClient={activeWatchlistClient}
         stockReferenceClient={activeStockReferenceClient}
         marketDataClient={activeMarketDataClient}
+        marketStateClient={activeMarketStateClient}
         quantIndicatorClient={activeQuantIndicatorClient}
         tossSettingsClient={activeTossSettingsClient}
       />

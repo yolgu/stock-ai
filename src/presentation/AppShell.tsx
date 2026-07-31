@@ -29,15 +29,19 @@ import {
 import type { RuntimeProfileDto } from "../domain/runtime/AppRuntimeProfile";
 import type { WatchStockCardDto } from "../domain/watchlist/Watchlist";
 import type { MarketDataClient } from "../infrastructure/neutralino/NeutralinoMarketDataClient";
+import type { MarketStateClient } from "../infrastructure/neutralino/NeutralinoMarketStateClient";
 import type { QuantIndicatorClient } from "../infrastructure/neutralino/NeutralinoQuantIndicatorClient";
 import type { StockReferenceClient } from "../infrastructure/neutralino/NeutralinoStockReferenceClient";
 import type { TossSettingsClient } from "../infrastructure/neutralino/NeutralinoTossSettingsClient";
 import type { WatchlistClient } from "../infrastructure/neutralino/NeutralinoWatchlistClient";
 import type {
+  MarketStateHistoryPointPayload,
+  MarketStateSignalId,
   TossCredentialStatusPayload,
   VerifiedStockReferencePayload
 } from "../shared/contracts/app-runtime-contract";
 import { useMarketDataPolling } from "./useMarketDataPolling";
+import { useMarketState } from "./useMarketState";
 import { useQuantIndicators } from "./useQuantIndicators";
 import { useStockReferenceVerification } from "./useStockReferenceVerification";
 import { useTossCredentialSettings } from "./useTossCredentialSettings";
@@ -62,6 +66,7 @@ export interface AppShellProps {
   watchlistClient: WatchlistClient;
   stockReferenceClient: StockReferenceClient;
   marketDataClient: MarketDataClient;
+  marketStateClient?: MarketStateClient;
   quantIndicatorClient: QuantIndicatorClient;
   tossSettingsClient: TossSettingsClient;
 }
@@ -104,11 +109,49 @@ const initialCredentialFormState: TossCredentialFormState = {
   clientSecret: ""
 };
 
+const idleMarketStateClient: MarketStateClient = {
+  refreshWatchlist: async () => ({
+    refreshedAt: new Date().toISOString(),
+    snapshots: [],
+    backfillProgress: {
+      jobId: "not-started",
+      status: "idle",
+      requiredSessions: 0,
+      completedSessions: 0,
+      currentInstrumentId: null,
+      totalInstrumentCount: 0,
+      completedInstrumentCount: 0,
+      error: null
+    }
+  }),
+  readLatestSnapshots: async () => ({
+    snapshots: [],
+    backfillProgress: {
+      jobId: "not-started",
+      status: "idle",
+      requiredSessions: 0,
+      completedSessions: 0,
+      currentInstrumentId: null,
+      totalInstrumentCount: 0,
+      completedInstrumentCount: 0,
+      error: null
+    }
+  }),
+  readTrace: async () => ({ trace: null }),
+  readHistory: async (input) => ({
+    cardId: input.cardId,
+    signalId: input.signalId,
+    sessionDate: input.sessionDate,
+    points: []
+  })
+};
+
 export function AppShell({
   runtimeProfile,
   watchlistClient,
   stockReferenceClient,
   marketDataClient,
+  marketStateClient,
   quantIndicatorClient,
   tossSettingsClient
 }: AppShellProps): ReactElement {
@@ -127,11 +170,28 @@ export function AppShell({
   const [selectedStatusFilter, setSelectedStatusFilter] =
     useState<CardStatusFilterValue>("all");
   const [selectedCardId, setSelectedCardId] = useState<string | null>(null);
+  const [selectedMarketStateSignalId, setSelectedMarketStateSignalId] =
+    useState<MarketStateSignalId>("FOMO_LIKE");
   const activeCards = watchlist.watchlist.activeCards;
   const marketData = useMarketDataPolling(marketDataClient, {
     activeCards,
     credentials: tossSettings.credentials
   });
+  const marketDataGenerationKey: string = Object.values(
+    marketData.snapshotsByCardId
+  )
+    .map((snapshot): string => `${snapshot.cardId}:${snapshot.snapshotId}`)
+    .sort()
+    .join("|");
+  const marketState = useMarketState(
+    marketStateClient ?? idleMarketStateClient,
+    {
+      activeCards,
+      credentials: tossSettings.credentials,
+      marketDataStatus: marketData.status,
+      marketDataGenerationKey
+    }
+  );
   const quantIndicators = useQuantIndicators(quantIndicatorClient, {
     activeCards,
     credentials: tossSettings.credentials,
@@ -286,6 +346,27 @@ export function AppShell({
     stockReference.clear();
   };
 
+  const selectMarketStateSignal = (
+    cardId: string,
+    signalId: MarketStateSignalId
+  ): void => {
+    setSelectedCardId(cardId);
+    setSelectedMarketStateSignalId(signalId);
+    const snapshot = marketState.snapshotsByCardId[cardId];
+
+    if (snapshot !== undefined && snapshot.sessionDate !== "") {
+      void marketState.loadSignalDetail(
+        cardId,
+        signalId,
+        snapshot.sessionDate
+      );
+    }
+  };
+
+  const openCardDetail = (cardId: string): void => {
+    selectMarketStateSignal(cardId, "FOMO_LIKE");
+  };
+
   return (
     <main className="app-background">
       <section className="workspace-shell" aria-labelledby="watchlist-ready-heading">
@@ -373,25 +454,41 @@ export function AppShell({
             />
             <section className="watch-dashboard-layout" aria-label="관심종목 대시보드">
               <section className="watch-card-grid" aria-label="관심종목 목록">
-            {filteredCards.map((card) => (
-              <WatchStockCardView
-                viewModel={createWatchStockCardViewModel({
-                  card,
-                  marketDataSnapshot: marketData.snapshotsByCardId[card.id] ?? null,
-                  quantIndicatorSnapshot: quantIndicators.snapshotsByCardId[card.id] ?? null,
-                  quantIndicatorStatus: quantIndicators.status
-                })}
-                key={card.id}
-                onArchive={() => void watchlist.archiveCard(card.id)}
-                onDelete={() => void watchlist.deleteCard(card.id)}
-                onHide={() => void watchlist.hideCard(card.id)}
-                onMoveDown={() => moveCard(card.id, "down")}
-                onMoveUp={() => moveCard(card.id, "up")}
-                onSelect={() => setSelectedCardId(card.id)}
-                canMoveDown={activeCards.findIndex((current) => current.id === card.id) < activeCards.length - 1}
-                canMoveUp={activeCards.findIndex((current) => current.id === card.id) > 0}
-              />
-            ))}
+                {filteredCards.map((card) => (
+                  <WatchStockCardView
+                    viewModel={createWatchStockCardViewModel({
+                      card,
+                      marketDataSnapshot:
+                        marketData.snapshotsByCardId[card.id] ?? null,
+                      quantIndicatorSnapshot:
+                        quantIndicators.snapshotsByCardId[card.id] ?? null,
+                      quantIndicatorStatus: quantIndicators.status,
+                      marketStateSnapshot:
+                        marketState.snapshotsByCardId[card.id] ?? null
+                    })}
+                    key={card.id}
+                    onArchive={() => void watchlist.archiveCard(card.id)}
+                    onDelete={() => void watchlist.deleteCard(card.id)}
+                    onHide={() => void watchlist.hideCard(card.id)}
+                    onMoveDown={() => moveCard(card.id, "down")}
+                    onMoveUp={() => moveCard(card.id, "up")}
+                    onSelect={() => openCardDetail(card.id)}
+                    onSelectMarketStateSignal={(signalId) =>
+                      selectMarketStateSignal(card.id, signalId)
+                    }
+                    highlighted={marketState.highlightedCardIds.has(card.id)}
+                    canMoveDown={
+                      activeCards.findIndex(
+                        (current) => current.id === card.id
+                      ) < activeCards.length - 1
+                    }
+                    canMoveUp={
+                      activeCards.findIndex(
+                        (current) => current.id === card.id
+                      ) > 0
+                    }
+                  />
+                ))}
               </section>
               {selectedCard !== null ? (
                 <WatchStockDetailPanel
@@ -401,9 +498,17 @@ export function AppShell({
                     marketDataSnapshot: marketData.snapshotsByCardId[selectedCard.id] ?? null,
                     quantIndicatorSnapshot:
                       quantIndicators.snapshotsByCardId[selectedCard.id] ?? null,
-                    quantIndicatorStatus: quantIndicators.status
+                    quantIndicatorStatus: quantIndicators.status,
+                    marketStateSnapshot:
+                      marketState.snapshotsByCardId[selectedCard.id] ?? null,
+                    selectedMarketStateSignalId,
+                    marketStateTrace: marketState.selectedTrace,
+                    marketStateHistory: marketState.selectedHistory
                   })}
                   onClose={() => setSelectedCardId(null)}
+                  onSelectMarketStateSignal={(signalId) =>
+                    selectMarketStateSignal(selectedCard.id, signalId)
+                  }
                   onSave={(input) => void watchlist.updateCard(selectedCard.id, input)}
                 />
               ) : null}
@@ -438,6 +543,10 @@ export function AppShell({
         {watchlist.message !== null ? (
           <p className="status-message">{watchlist.message}</p>
         ) : null}
+
+        <p className="sr-only" aria-live="polite">
+          {marketState.announcement ?? ""}
+        </p>
 
         <section className="capability-strip" aria-label="런타임 기능 상태">
           {runtimeProfile.capabilities.map((capability) => (
@@ -522,29 +631,39 @@ interface WatchStockCardViewProps {
   viewModel: WatchStockCardViewModel;
   canMoveDown: boolean;
   canMoveUp: boolean;
+  highlighted: boolean;
   onArchive(): void;
   onDelete(): void;
   onHide(): void;
   onMoveDown(): void;
   onMoveUp(): void;
   onSelect(): void;
+  onSelectMarketStateSignal(signalId: MarketStateSignalId): void;
 }
 
 function WatchStockCardView({
   viewModel,
   canMoveDown,
   canMoveUp,
+  highlighted,
   onArchive,
   onDelete,
   onHide,
   onMoveDown,
   onMoveUp,
-  onSelect
+  onSelect,
+  onSelectMarketStateSignal
 }: WatchStockCardViewProps): ReactElement {
   const card = viewModel.card;
 
   return (
-    <article className="watch-card">
+    <article
+      className={
+        highlighted
+          ? "watch-card watch-card--market-state-alert"
+          : "watch-card"
+      }
+    >
       <header className="watch-card__header">
         <div>
           <p className="watch-card__symbol">
@@ -557,6 +676,11 @@ function WatchStockCardView({
         </span>
       </header>
       <MarketContextStrip marketContext={viewModel.marketContext} compact />
+      <MarketStateCardView
+        marketState={viewModel.marketState}
+        symbol={card.symbol}
+        onSelectSignal={onSelectMarketStateSignal}
+      />
       {card.memo.trim() !== "" ? <p className="watch-card__memo">{card.memo}</p> : null}
       <section className="quant-card-state" aria-label={`${card.symbol} 정량 지표 상태`}>
         <div>
@@ -633,10 +757,451 @@ function WatchStockCardView({
   );
 }
 
+interface MarketStateCardViewProps {
+  marketState: WatchStockCardViewModel["marketState"];
+  symbol: string;
+  onSelectSignal(signalId: MarketStateSignalId): void;
+}
+
+function MarketStateCardView({
+  marketState,
+  symbol,
+  onSelectSignal
+}: MarketStateCardViewProps): ReactElement {
+  return (
+    <section
+      className="market-state-card"
+      aria-label={`${symbol} 심리·시장 신호`}
+    >
+      <header className="market-state-card__header">
+        <strong>심리·시장 신호</strong>
+        <span>{marketState.asOfLabel}</span>
+      </header>
+      <div className="market-state-signal-grid">
+        {marketState.signals.map((signal) => (
+          <button
+            className={`market-state-signal market-state-signal--${signal.status}`}
+            type="button"
+            key={signal.signalId}
+            aria-label={`${signal.displayName} ${signal.percentileLabel} ${signal.statusLabel} 상세`}
+            onClick={() => onSelectSignal(signal.signalId)}
+          >
+            <span className="market-state-signal__name">
+              {signal.displayName}
+              <HelpCircle size={12} aria-hidden="true" />
+            </span>
+            <b>{signal.percentileLabel}</b>
+            <span>{signal.statusLabel}</span>
+            {signal.lastDetectionLabel !== null ? (
+              <small>{signal.lastDetectionLabel}</small>
+            ) : null}
+          </button>
+        ))}
+      </div>
+      <p className="market-state-card__observed">
+        관측 상태 · {marketState.observedStateLabel}
+      </p>
+    </section>
+  );
+}
+
+interface MarketStateDetailViewProps {
+  marketState: DetailPanelViewModel["marketState"];
+  onSelectSignal(signalId: MarketStateSignalId): void;
+}
+
+function MarketStateDetailView({
+  marketState,
+  onSelectSignal
+}: MarketStateDetailViewProps): ReactElement {
+  const trace = marketState.trace;
+  const history = marketState.history;
+  const recentPoints = history?.points.slice(-12) ?? [];
+  const topContributions =
+    trace?.trace?.contributions
+      .slice()
+      .sort(
+        (left, right): number =>
+          Math.abs(right.contribution) -
+          Math.abs(left.contribution)
+      )
+      .slice(0, 5) ?? [];
+  const thresholdPercentile =
+    trace?.trace === null || trace?.trace === undefined
+      ? null
+      : (1 - trace.trace.effectiveTailShare) * 100;
+
+  return (
+    <div className="market-state-detail">
+      <div className="market-state-detail__summary">
+        <span>{marketState.asOfLabel}</span>
+        <strong>관측 상태 · {marketState.observedStateLabel}</strong>
+      </div>
+      <div
+        className="market-state-detail__tabs"
+        role="tablist"
+        aria-label="시장상태 신호 선택"
+      >
+        {marketState.signals.map((signal) => (
+          <button
+            className={
+              signal.signalId === marketState.selectedSignalId
+                ? "market-state-detail__tab is-active"
+                : "market-state-detail__tab"
+            }
+            type="button"
+            role="tab"
+            aria-selected={
+              signal.signalId === marketState.selectedSignalId
+            }
+            key={signal.signalId}
+            onClick={() => onSelectSignal(signal.signalId)}
+          >
+            <span>{signal.displayName}</span>
+            <b>{signal.percentileLabel}</b>
+            <small>{signal.statusLabel}</small>
+          </button>
+        ))}
+      </div>
+
+      <article className="market-state-judgment">
+        <header>
+          <div>
+            <p className="eyebrow">
+              {marketState.selectedSignal.displayName}
+            </p>
+            <h4>{marketState.selectedSignal.statusLabel}</h4>
+          </div>
+          <strong className="market-state-judgment__percentile">
+            {marketState.selectedSignal.percentileLabel}
+          </strong>
+        </header>
+        {marketState.selectedSignal.lastDetectionLabel !== null ? (
+          <p>{marketState.selectedSignal.lastDetectionLabel}</p>
+        ) : null}
+        {trace === null ? (
+          <p className="muted-copy">
+            현재 판정의 계산 상세는 데이터 준비 후 표시됩니다.
+          </p>
+        ) : (
+          <>
+            <dl className="market-state-metrics">
+              <Metric
+                label="20거래일 백분위"
+                value={
+                  trace.percentile === null
+                    ? "—"
+                    : `${trace.percentile.toFixed(4)} / 100`
+                }
+              />
+              <Metric
+                label="경험 CDF"
+                value={
+                  trace.percentileNumerator === null ||
+                  trace.percentileDenominator === null
+                    ? "—"
+                    : `${trace.percentileNumerator} / ${trace.percentileDenominator}`
+                }
+              />
+              <Metric
+                label="원점수 η"
+                value={formatTechnicalNumber(trace.rawScore)}
+              />
+              <Metric
+                label="동적 임계값 τ"
+                value={formatTechnicalNumber(trace.dynamicThreshold)}
+              />
+              <Metric
+                label="임계 대비 η−τ"
+                value={formatTechnicalNumber(trace.thresholdDistance)}
+              />
+              <Metric
+                label="예측 구간"
+                value={`${trace.horizonMinutes}분`}
+              />
+              <Metric
+                label="관측/요구 상태"
+                value={`${trace.currentRiskState} / ${trace.requiredRiskState}`}
+              />
+              <Metric label="마지막 완료봉" value={trace.asOf} />
+            </dl>
+            {trace.gate !== null ? (
+              <p
+                className={
+                  trace.gate.passed
+                    ? "market-state-gate market-state-gate--passed"
+                    : "market-state-gate market-state-gate--failed"
+                }
+              >
+                게이트 · {trace.gate.label}{" "}
+                {formatTechnicalNumber(trace.gate.value)}{" "}
+                {trace.gate.operator} {trace.gate.threshold} ·{" "}
+                {trace.gate.passed ? "통과" : "미통과"}
+              </p>
+            ) : (
+              <p className="market-state-gate">
+                별도 보조 게이트 없음
+              </p>
+            )}
+          </>
+        )}
+      </article>
+
+      <section className="market-state-chart-section">
+        <h4>최근 60분 변화</h4>
+        <SignalHistoryChart
+          points={recentPoints}
+          thresholdPercentile={thresholdPercentile}
+        />
+      </section>
+
+      {trace?.trace !== null && trace?.trace !== undefined ? (
+        <>
+          <section className="market-state-contributions">
+            <h4>점수를 크게 움직인 요인</h4>
+            <div>
+              {topContributions.map((contribution) => (
+                <article key={contribution.featureName}>
+                  <span>{contribution.featureName}</span>
+                  <b>
+                    {contribution.contribution >= 0 ? "+" : ""}
+                    {formatTechnicalNumber(
+                      contribution.contribution
+                    )}
+                  </b>
+                </article>
+              ))}
+            </div>
+          </section>
+
+          <details className="market-state-formula-details">
+            <summary>
+              전체 수식과 {trace.trace.contributions.length}개 입력 보기
+            </summary>
+            <p>
+              η = {formatTechnicalNumber(trace.trace.intercept)} + Σ
+              βⱼ((xⱼ−μⱼ)/σⱼ)
+            </p>
+            <p className="muted-copy">
+              x는 현재 관측값, μ는 연구 표본 평균, σ는 연구 표본 척도,
+              z는 표준화값, βz는 최종 원점수 기여입니다.
+            </p>
+            <div className="market-state-formula-table-wrap">
+              <table className="market-state-formula-table">
+                <thead>
+                  <tr>
+                    <th scope="col">입력</th>
+                    <th scope="col">x</th>
+                    <th scope="col">μ</th>
+                    <th scope="col">σ</th>
+                    <th scope="col">z</th>
+                    <th scope="col">β</th>
+                    <th scope="col">βz</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {trace.trace.contributions.map((contribution) => (
+                    <tr key={contribution.featureName}>
+                      <th scope="row">
+                        {contribution.featureName}
+                      </th>
+                      <td>
+                        {formatTechnicalNumber(
+                          contribution.rawValue
+                        )}
+                      </td>
+                      <td>
+                        {formatTechnicalNumber(contribution.mean)}
+                      </td>
+                      <td>
+                        {formatTechnicalNumber(contribution.scale)}
+                      </td>
+                      <td>
+                        {formatTechnicalNumber(
+                          contribution.standardizedValue
+                        )}
+                      </td>
+                      <td>
+                        {formatTechnicalNumber(
+                          contribution.coefficient
+                        )}
+                      </td>
+                      <td>
+                        {formatTechnicalNumber(
+                          contribution.contribution
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <dl className="market-state-lineage">
+              <Metric
+                label="Formula version"
+                value={trace.formulaVersion}
+              />
+              <Metric
+                label="Payload SHA-256"
+                value={trace.formulaContentSha256}
+              />
+              <Metric
+                label="입력 generation"
+                value={trace.sourceGenerationId}
+              />
+            </dl>
+          </details>
+        </>
+      ) : null}
+
+      {history !== null && history.points.length > 12 ? (
+        <details className="market-state-formula-details">
+          <summary>당일 전체 변화 보기</summary>
+          <SignalHistoryChart
+            points={history.points}
+            thresholdPercentile={thresholdPercentile}
+          />
+        </details>
+      ) : null}
+
+      <p className="market-state-limitation">
+        이 값은 완료된 5분 OHLCV에서 관측한 가격·거래량 형태의
+        상대적 강도입니다. 투자자 심리, 사건 발생확률 또는
+        매수·매도 권고를 직접 뜻하지 않으며, 임계값 아래로 내려가도
+        “해소”로 해석하지 않습니다.
+      </p>
+    </div>
+  );
+}
+
+interface MetricProps {
+  label: string;
+  value: string;
+}
+
+function Metric({ label, value }: MetricProps): ReactElement {
+  return (
+    <div>
+      <dt>{label}</dt>
+      <dd>{value}</dd>
+    </div>
+  );
+}
+
+interface SignalHistoryChartProps {
+  points: MarketStateHistoryPointPayload[];
+  thresholdPercentile: number | null;
+}
+
+function SignalHistoryChart({
+  points,
+  thresholdPercentile
+}: SignalHistoryChartProps): ReactElement {
+  const width: number = 320;
+  const height: number = 92;
+  const padding: number = 8;
+  const finitePoints = points.filter(
+    (
+      point
+    ): point is MarketStateHistoryPointPayload & {
+      percentile: number;
+    } => point.percentile !== null
+  );
+
+  if (finitePoints.length === 0) {
+    return (
+      <p className="market-state-chart-empty">
+        표시할 완료 5분봉 이력이 없습니다.
+      </p>
+    );
+  }
+
+  const coordinates = finitePoints.map(
+    (point, index): { x: number; y: number; detected: boolean } => ({
+      x:
+        finitePoints.length === 1
+          ? width / 2
+          : padding +
+            (index / (finitePoints.length - 1)) *
+              (width - 2 * padding),
+      y:
+        height -
+        padding -
+        (point.percentile / 100) * (height - 2 * padding),
+      detected: point.detected
+    })
+  );
+  const path: string = coordinates
+    .map(
+      (coordinate, index): string =>
+        `${index === 0 ? "M" : "L"}${coordinate.x.toFixed(2)},${coordinate.y.toFixed(2)}`
+    )
+    .join(" ");
+  const thresholdY: number | null =
+    thresholdPercentile === null
+      ? null
+      : height -
+        padding -
+        (thresholdPercentile / 100) * (height - 2 * padding);
+
+  return (
+    <svg
+      className="market-state-chart"
+      viewBox={`0 0 ${width} ${height}`}
+      role="img"
+      aria-label="완료된 5분봉별 시장상태 백분위 변화"
+    >
+      <line
+        className="market-state-chart__baseline"
+        x1={padding}
+        x2={width - padding}
+        y1={height - padding}
+        y2={height - padding}
+      />
+      {thresholdY !== null ? (
+        <line
+          className="market-state-chart__threshold"
+          x1={padding}
+          x2={width - padding}
+          y1={thresholdY}
+          y2={thresholdY}
+        />
+      ) : null}
+      <path className="market-state-chart__line" d={path} />
+      {coordinates.map((coordinate, index) =>
+        coordinate.detected ? (
+          <circle
+            className="market-state-chart__detection"
+            cx={coordinate.x}
+            cy={coordinate.y}
+            key={`${coordinate.x}-${index}`}
+            r="3"
+          />
+        ) : null
+      )}
+    </svg>
+  );
+}
+
+function formatTechnicalNumber(value: number | null): string {
+  if (value === null || !Number.isFinite(value)) {
+    return "—";
+  }
+
+  if (value === 0) {
+    return "0";
+  }
+
+  return Math.abs(value) >= 1_000 || Math.abs(value) < 0.0001
+    ? value.toExponential(4)
+    : value.toFixed(6);
+}
+
 interface WatchStockDetailPanelProps {
   card: WatchStockCardDto;
   viewModel: DetailPanelViewModel;
   onClose(): void;
+  onSelectMarketStateSignal(signalId: MarketStateSignalId): void;
   onSave(input: { groupId: string | null; tags: string[]; memo: string }): void;
 }
 
@@ -644,6 +1209,7 @@ function WatchStockDetailPanel({
   card,
   viewModel,
   onClose,
+  onSelectMarketStateSignal,
   onSave
 }: WatchStockDetailPanelProps): ReactElement {
   const [memo, setMemo] = useState(viewModel.memo);
@@ -709,6 +1275,17 @@ function WatchStockDetailPanel({
           <MarketContextStrip marketContext={viewModel.marketContext} />
         </section>
 
+        <section
+          className="detail-section"
+          aria-labelledby="market-state-detail-heading"
+        >
+          <h3 id="market-state-detail-heading">심리·시장 신호</h3>
+          <MarketStateDetailView
+            marketState={viewModel.marketState}
+            onSelectSignal={onSelectMarketStateSignal}
+          />
+        </section>
+
         <section className="detail-section" aria-labelledby="quant-checklist-heading">
           <h3 id="quant-checklist-heading">진입 전 체크</h3>
           <QuantChecklistView
@@ -718,11 +1295,6 @@ function WatchStockDetailPanel({
             onCloseExplanation={() => setActiveExplanationKey(null)}
             onToggleExplanation={toggleExplanation}
           />
-        </section>
-
-        <section className="detail-section" aria-labelledby="profit-taking-risk-heading">
-          <h3 id="profit-taking-risk-heading">{viewModel.profitTakingRisk.title}</h3>
-          <ProfitTakingRiskView profitTakingRisk={viewModel.profitTakingRisk} />
         </section>
 
         <section className="detail-section" aria-labelledby="conditional-zone-heading">
@@ -837,38 +1409,6 @@ function QuantChecklistView({
           </article>
         );
       })}
-    </div>
-  );
-}
-
-interface ProfitTakingRiskViewProps {
-  profitTakingRisk: DetailPanelViewModel["profitTakingRisk"];
-}
-
-function ProfitTakingRiskView({
-  profitTakingRisk
-}: ProfitTakingRiskViewProps): ReactElement {
-  return (
-    <div className={`profit-taking-risk profit-taking-risk--${profitTakingRisk.severity}`}>
-      <div className="profit-taking-risk__summary">
-        <strong>{profitTakingRisk.scoreLabel}</strong>
-        <span>{profitTakingRisk.statusLabel}</span>
-      </div>
-      <p>{profitTakingRisk.summary}</p>
-      <div className="profit-taking-risk__causes">
-        {profitTakingRisk.causes.map((cause) => (
-          <article
-            className={`profit-taking-cause profit-taking-cause--${cause.severity}`}
-            key={cause.key}
-          >
-            <div>
-              <strong>{cause.label}</strong>
-              <span>{cause.statusLabel}</span>
-            </div>
-            <b>{cause.scoreLabel}</b>
-          </article>
-        ))}
-      </div>
     </div>
   );
 }

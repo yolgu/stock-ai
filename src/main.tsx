@@ -5,6 +5,7 @@ import { createRoot } from "react-dom/client";
 import { App } from "./App";
 import {
   createMarketDataClientFromNeutralinoApi,
+  createMarketStateClientFromNeutralinoApi,
   createQuantIndicatorClientFromNeutralinoApi,
   createRuntimeProfileClientFromNeutralinoApi,
   createStockReferenceClientFromNeutralinoApi,
@@ -35,6 +36,10 @@ createRoot(document.getElementById("root") as HTMLElement).render(
         events
       })}
       marketDataClient={createMarketDataClientFromNeutralinoApi({
+        extensions,
+        events
+      })}
+      marketStateClient={createMarketStateClientFromNeutralinoApi({
         extensions,
         events
       })}

@@ -1,13 +1,28 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within
+} from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
 import type { RuntimeProfileDto } from "../domain/runtime/AppRuntimeProfile";
 import type { WatchStockCardDto } from "../domain/watchlist/Watchlist";
 import type { MarketDataClient } from "../infrastructure/neutralino/NeutralinoMarketDataClient";
+import type { MarketStateClient } from "../infrastructure/neutralino/NeutralinoMarketStateClient";
 import type { QuantIndicatorClient } from "../infrastructure/neutralino/NeutralinoQuantIndicatorClient";
 import type { StockReferenceClient } from "../infrastructure/neutralino/NeutralinoStockReferenceClient";
 import type {
   MarketDataSnapshotPayload,
+  MarketStateFormulaSnapshotPayload,
+  MarketStateHistoryPayload,
+  MarketStateLatestSnapshotsPayload,
+  MarketStateRefreshPayload,
+  MarketStateSignalId,
+  MarketStateSignalPayload,
+  MarketStateTracePayload,
+  MarketStateTraceResponsePayload,
   QuantIndicatorSnapshotPayload,
   TossCredentialStatusPayload
 } from "../shared/contracts/app-runtime-contract";
@@ -67,6 +82,142 @@ const riskCard: WatchStockCardDto = {
 };
 
 const sampleActiveCards = [sampleCard];
+
+const marketStateSignalIds: readonly MarketStateSignalId[] = [
+  "FOMO_LIKE",
+  "PANIC_LIKE",
+  "PROFIT_TAKING_PROXY",
+  "PERSISTENT_RECOVERY",
+  "EFFICIENT_UPTREND"
+];
+
+const marketStateSignalNames: Record<MarketStateSignalId, string> = {
+  FOMO_LIKE: "FOMO",
+  PANIC_LIKE: "패닉",
+  PROFIT_TAKING_PROXY: "차익실현",
+  PERSISTENT_RECOVERY: "회복",
+  EFFICIENT_UPTREND: "상승세"
+};
+
+const sampleMarketStateSignals: MarketStateSignalPayload[] =
+  marketStateSignalIds.map(
+    (
+      signalId: MarketStateSignalId,
+      index: number
+    ): MarketStateSignalPayload => ({
+      signalId,
+      displayName: marketStateSignalNames[signalId],
+      formationLabel: `${marketStateSignalNames[signalId]} 형성`,
+      horizonMinutes: 30,
+      status: index === 0 ? "detected" : "notDetected",
+      percentile: 93.4 - index * 8,
+      percentileNumerator: 934 - index * 80,
+      percentileDenominator: 1_000,
+      rawScore: 1.32 - index * 0.15,
+      dynamicThreshold: 1.1,
+      thresholdDistance: 0.22 - index * 0.15,
+      gate:
+        signalId === "FOMO_LIKE"
+          ? {
+              gateId: "POSITIVE_PRESSURE_MEAN_3",
+              label: "최근 3개 봉 매수 압력",
+              value: 0.42,
+              operator: ">",
+              threshold: 0,
+              passed: true
+            }
+          : null,
+      requiredRiskState: "BASELINE",
+      currentRiskState: "BASELINE",
+      currentDetectionStartedAt:
+        signalId === "FOMO_LIKE"
+          ? "2026-07-31T14:00:00.000Z"
+          : null,
+      lastDetectedAt:
+        signalId === "FOMO_LIKE"
+          ? "2026-07-31T14:00:00.000Z"
+          : null,
+      trace:
+        signalId === "FOMO_LIKE"
+          ? {
+              intercept: -0.18,
+              contributions: [
+                {
+                  featureName: "ret_6",
+                  rawValue: 0.021,
+                  mean: 0.001,
+                  scale: 0.01,
+                  standardizedValue: 2,
+                  coefficient: 0.75,
+                  contribution: 1.5
+                },
+                {
+                  featureName: "relative_volume",
+                  rawValue: 1.8,
+                  mean: 1,
+                  scale: 0.4,
+                  standardizedValue: 2,
+                  coefficient: 0.31,
+                  contribution: 0.62
+                }
+              ],
+              effectiveTailShare: 0.08,
+              calibrationTailShare: 0.1,
+              transportTailSafetyFactor: 0.8,
+              candidateId: "fomo-v3",
+              cause: "fast-upside-demand",
+              phenotypeTag: "fomo-like"
+            }
+          : null
+    })
+  );
+
+const sampleMarketStateSnapshot: MarketStateFormulaSnapshotPayload = {
+  snapshotId: "market-state-1",
+  cardId: "card-1",
+  symbol: "MU",
+  sessionDate: "2026-07-31",
+  asOf: "2026-07-31T14:05:00.000Z",
+  bucketIndex: 6,
+  sourceGenerationId: "generation-1",
+  formulaVersion: "a".repeat(64),
+  formulaContentSha256: "b".repeat(64),
+  observedState: "BASELINE",
+  observedStateLabel: "방향성 확인 전",
+  signals: sampleMarketStateSignals,
+  notifiedSignalIds: ["FOMO_LIKE"]
+};
+
+const sampleMarketStateTrace: MarketStateTracePayload = {
+  ...sampleMarketStateSignals[0],
+  cardId: "card-1",
+  symbol: "MU",
+  sessionDate: "2026-07-31",
+  asOf: "2026-07-31T14:05:00.000Z",
+  sourceGenerationId: "generation-1",
+  formulaVersion: "a".repeat(64),
+  formulaContentSha256: "b".repeat(64),
+  observedState: "BASELINE",
+  observedStateLabel: "방향성 확인 전"
+};
+
+const sampleMarketStateHistory: MarketStateHistoryPayload = {
+  cardId: "card-1",
+  signalId: "FOMO_LIKE",
+  sessionDate: "2026-07-31",
+  points: Array.from(
+    { length: 13 },
+    (_: unknown, index: number) => ({
+      asOf: `2026-07-31T14:${String(index * 5).padStart(2, "0")}:00.000Z`,
+      bucketIndex: index,
+      status: index >= 11 ? "detected" : "notDetected",
+      percentile: 45 + index * 4,
+      rawScore: 0.2 + index * 0.1,
+      dynamicThreshold: 1.1,
+      detected: index >= 11
+    })
+  )
+};
 
 const sampleMarketDataSnapshot: MarketDataSnapshotPayload = {
   snapshotId: "snapshot-1",
@@ -472,6 +623,61 @@ function createMarketDataClient(
       vi.fn(async () => ({
         snapshots: [sampleMarketDataSnapshot]
       }))
+  };
+}
+
+function createMarketStateClient(
+  overrides: Partial<MarketStateClient> = {}
+): MarketStateClient {
+  return {
+    refreshWatchlist:
+      overrides.refreshWatchlist ??
+      vi.fn(
+        async (): Promise<MarketStateRefreshPayload> => ({
+          refreshedAt: "2026-07-31T14:05:01.000Z",
+          snapshots: [sampleMarketStateSnapshot],
+          backfillProgress: {
+            jobId: "market-state-backfill-1",
+            status: "complete",
+            requiredSessions: 60,
+            completedSessions: 60,
+            currentInstrumentId: null,
+            totalInstrumentCount: 34,
+            completedInstrumentCount: 34,
+            error: null
+          }
+        })
+      ),
+    readLatestSnapshots:
+      overrides.readLatestSnapshots ??
+      vi.fn(
+        async (): Promise<MarketStateLatestSnapshotsPayload> => ({
+          snapshots: [sampleMarketStateSnapshot],
+          backfillProgress: {
+            jobId: "market-state-backfill-1",
+            status: "complete",
+            requiredSessions: 60,
+            completedSessions: 60,
+            currentInstrumentId: null,
+            totalInstrumentCount: 34,
+            completedInstrumentCount: 34,
+            error: null
+          }
+        })
+      ),
+    readTrace:
+      overrides.readTrace ??
+      vi.fn(
+        async (): Promise<MarketStateTraceResponsePayload> => ({
+          trace: sampleMarketStateTrace
+        })
+      ),
+    readHistory:
+      overrides.readHistory ??
+      vi.fn(
+        async (): Promise<MarketStateHistoryPayload> =>
+          sampleMarketStateHistory
+      )
   };
 }
 
@@ -893,11 +1099,13 @@ describe("AppShell", () => {
     expect(screen.getByText("지표 업데이트 09:00:06")).toBeVisible();
     expect(screen.getByText("VWAP 위 안착 ($101.75)")).toBeVisible();
     expect(screen.getByText("체결 압력 우위 (45)")).toBeVisible();
-    expect(screen.getByText("차익실현 리스크 경계 (42점)")).toBeVisible();
+    expect(
+      screen.queryByText("차익실현 리스크 경계 (42점)")
+    ).not.toBeInTheDocument();
     expect(screen.queryByText("101.7500")).not.toBeInTheDocument();
   });
 
-  it("shows a calculation state before the first profit taking risk score exists", async () => {
+  it("shows all five market-state signals while the first calculation is collecting", async () => {
     let resolveQuantRefresh: (
       value: Awaited<ReturnType<QuantIndicatorClient["refreshWatchlist"]>>
     ) => void = () => undefined;
@@ -928,10 +1136,41 @@ describe("AppShell", () => {
     });
 
     expect(screen.getByText("계산 중")).toBeVisible();
-    expect(screen.getByText("차익실현 리스크 계산 중")).toBeVisible();
+    const signalRegion: HTMLElement = screen.getByRole("region", {
+      name: "MU 심리·시장 신호"
+    });
+    expect(within(signalRegion).getAllByRole("button")).toHaveLength(5);
+    expect(
+      within(signalRegion).getByRole("button", {
+        name: "FOMO — 수집 중 상세"
+      })
+    ).toBeVisible();
+    expect(
+      within(signalRegion).getByRole("button", {
+        name: "패닉 — 수집 중 상세"
+      })
+    ).toBeVisible();
+    expect(
+      within(signalRegion).getByRole("button", {
+        name: "차익실현 — 수집 중 상세"
+      })
+    ).toBeVisible();
+    expect(
+      within(signalRegion).getByRole("button", {
+        name: "회복 — 수집 중 상세"
+      })
+    ).toBeVisible();
+    expect(
+      within(signalRegion).getByRole("button", {
+        name: "상승세 — 수집 중 상세"
+      })
+    ).toBeVisible();
     fireEvent.click(screen.getByRole("button", { name: "MU 마이크론 상세 보기" }));
-    expect(screen.getByRole("heading", { name: "차익실현 리스크" })).toBeVisible();
-    expect(screen.getAllByText("--")[0]).toBeVisible();
+    expect(
+      within(
+        screen.getByRole("tablist", { name: "시장상태 신호 선택" })
+      ).getAllByRole("tab")
+    ).toHaveLength(5);
 
     resolveQuantRefresh({
       refreshedAt: "2026-07-06T09:00:06.000Z",
@@ -1122,16 +1361,15 @@ describe("AppShell", () => {
     expect(screen.getByText("모멘텀 양호 (58.25)")).toBeVisible();
     expect(screen.getByText("손절 폭 정상 (0.97%)")).toBeVisible();
     expect(screen.queryByText("매물대 부담 낮음 (0.00)")).not.toBeInTheDocument();
-    expect(screen.getAllByText("차익실현 리스크 경계 (42점)")).toHaveLength(2);
-    expect(screen.getByRole("heading", { name: "차익실현 리스크" })).toBeVisible();
-    expect(screen.getByText("수익권 부담")).toBeVisible();
-    expect(screen.getByText("74점")).toBeVisible();
-    expect(screen.getByText("실제 매도 압력")).toBeVisible();
-    expect(screen.getByText("18점")).toBeVisible();
-    expect(screen.getByText("위쪽 매물 부담")).toBeVisible();
-    expect(screen.getByText("31점")).toBeVisible();
-    expect(screen.getByText("체결 환경 위험")).toBeVisible();
-    expect(screen.getByText("45점")).toBeVisible();
+    expect(screen.queryByText("차익실현 리스크 경계 (42점)")).not.toBeInTheDocument();
+    expect(
+      within(
+        screen.getByRole("tablist", { name: "시장상태 신호 선택" })
+      ).getAllByRole("tab")
+    ).toHaveLength(5);
+    expect(
+      screen.getByRole("tab", { name: "차익실현—수집 중" })
+    ).toBeVisible();
     expect(screen.getByText("손익비 1.5x 이상 (4.50x)")).toBeVisible();
     expect(screen.getByText("정량 심리 우호 (82점)")).toBeVisible();
     expect(screen.getByText("조건 충족 강함 (96.08%)")).toBeVisible();
@@ -1186,13 +1424,17 @@ describe("AppShell", () => {
     expect(screen.queryByRole("tooltip", { name: "CVD 추정 설명" })).not.toBeInTheDocument();
   });
 
-  it("shows the profit taking pressure helper with its estimation limits", async () => {
+  it("shows the research formula trace, lineage, history, and interpretation limits", async () => {
+    const marketStateClient: MarketStateClient =
+      createMarketStateClient();
+
     render(
       <AppShell
         runtimeProfile={runtimeProfile}
         watchlistClient={createWatchlistClient([sampleCard])}
         stockReferenceClient={createStockReferenceClient()}
         marketDataClient={createMarketDataClient()}
+        marketStateClient={marketStateClient}
         quantIndicatorClient={createQuantIndicatorClient()}
         tossSettingsClient={createTossSettingsClient(validTossCredentialStatus)}
       />
@@ -1200,16 +1442,38 @@ describe("AppShell", () => {
 
     await waitFor(() => {
       expect(screen.getByText("지표 업데이트 09:00:06")).toBeVisible();
-      expect(screen.getByRole("button", { name: "MU 마이크론 상세 보기" })).toBeVisible();
+      expect(
+        screen.getByRole("button", {
+          name: "FOMO 93.4 감지 상세"
+        })
+      ).toBeVisible();
     });
-    fireEvent.click(screen.getByRole("button", { name: "MU 마이크론 상세 보기" }));
-    fireEvent.click(screen.getByRole("button", { name: "차익실현 리스크 초보자 설명 보기" }));
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: "FOMO 93.4 감지 상세"
+      })
+    );
 
-    expect(screen.getByRole("tooltip", { name: "차익실현 리스크 설명" })).toBeVisible();
-    expect(screen.getByText("차익실현 리스크 = 42점")).toBeVisible();
-    expect(screen.getByText("표준 공식명이 아니며 매수·매도 추천으로 해석하지 않습니다.")).toBeVisible();
+    await waitFor(() => {
+      expect(screen.getByText("93.4000 / 100")).toBeVisible();
+    });
+    expect(screen.getByText("934 / 1000")).toBeVisible();
+    expect(screen.getByText("원점수 η")).toBeVisible();
+    expect(screen.getByText("동적 임계값 τ")).toBeVisible();
+    expect(screen.getByText("임계 대비 η−τ")).toBeVisible();
     expect(
-      screen.getByText("표준 공식명이 아니라 앱 내부 추정 지표이며 실제 보유자 원가나 매도 의도를 알 수 없습니다.")
+      screen.getByText(/최근 3개 봉 매수 압력/)
+    ).toHaveTextContent("0.420000 > 0 · 통과");
+    expect(screen.getByText("점수를 크게 움직인 요인")).toBeVisible();
+    expect(screen.getAllByText("ret_6")).toHaveLength(2);
+    expect(
+      screen.getByText("전체 수식과 2개 입력 보기")
+    ).toBeVisible();
+    expect(screen.getByText("당일 전체 변화 보기")).toBeVisible();
+    expect(
+      screen.getByText(
+        /투자자 심리, 사건 발생확률 또는 매수·매도 권고를 직접 뜻하지 않으며/
+      )
     ).toBeVisible();
   });
 
